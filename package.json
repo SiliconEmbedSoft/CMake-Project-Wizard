@@ -1,0 +1,56 @@
+{
+  "name": "cmake-subproject-wizard",
+  "displayName": "CMake Subproject Wizard (CLion-Style)",
+  "description": "Scaffold modular C/C++ CMake subprojects with clangd and CodeLLDB support.",
+  "version": "1.0.1",
+  "publisher": "SiliconEmbedSoft",
+  "icon": "icon.png",
+  "author": {
+    "name": "Nikhil Chaurasia",
+    "email": "nc4795.ericsson@gmail.com"
+  },
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Extension Packs",
+    "Other"
+  ],
+  "keywords": [
+    "cmake",
+    "c++",
+    "clangd",
+    "lldb",
+    "subproject"
+  ],
+  "main": "./extension.js",
+  "activationEvents": [
+    "onCommand:quickCMakeWizard.newSubproject"
+  ],
+  "extensionPack": [
+    "ms-vscode.cpptools-extension-pack",
+    "llvm-vs-code-extensions.vscode-clangd"
+  ],
+  "extensionDependencies": [
+    "ms-vscode.cmake-tools"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "quickCMakeWizard.newSubproject",
+        "title": "New CMake Project...",
+        "category": "CMake Wizard"
+      }
+    ],
+    "menus": {
+      "explorer/context": [
+        {
+          "command": "quickCMakeWizard.newSubproject",
+          "when": "explorerResourceIsFolder",
+          "group": "navigation@100"
+        }
+      ]
+    }
+  }
+}
