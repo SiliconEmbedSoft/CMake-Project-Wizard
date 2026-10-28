@@ -14,7 +14,7 @@ jobs:
     
     permissions:
       contents: read
-      id-token: write # Generates the OIDC token for Marketplace
+      id-token: write
 
     steps:
       - name: Checkout Code
@@ -31,6 +31,5 @@ jobs:
       - name: Install VSCE CLI
         run: npm install -g @vscode/vsce
 
-      # No -p / no token needed: vsce automatically exchanges the GitHub OIDC token
       - name: Publish to Marketplace
-        run: vsce publish
+        run: vsce publish -p "" --allow-missing-repository
