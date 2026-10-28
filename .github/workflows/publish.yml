@@ -1,0 +1,45 @@
+name: Publish Extension
+
+on:
+  push:
+    tags:
+      - 'v*'            # Triggers automatically when you push a version tag like v1.0.0
+  workflow_dispatch:   # Allows manual trigger from the GitHub Actions tab
+
+jobs:
+  publish:
+    name: Package & Publish to VS Code Marketplace
+    runs-on: ubuntu-latest
+    environment: production   # Matches the environment defined in your marketplace portal
+    
+    permissions:
+      contents: read
+      id-token: write         # Required for passwordless OIDC marketplace authentication
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install Dependencies
+        run: npm ci || npm install
+
+      - name: Install VSCE CLI
+        run: npm install -g @vscode/vsce
+
+      # Option A: If using OIDC (Passwordless integration configured in your screenshot)
+      - name: Publish with OIDC
+        run: vsce publish
+        continue-on-error: true
+
+      # Option B: Fallback to VSCE_PAT secret if OIDC is not used
+      - name: Publish with Personal Access Token (Fallback)
+        if: env.VSCE_PAT != ''
+        run: vsce publish -p ${{ secrets.VSCE_PAT }}
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
