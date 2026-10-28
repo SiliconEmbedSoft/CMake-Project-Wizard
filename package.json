@@ -4,6 +4,10 @@
   "description": "Scaffold modular C/C++ CMake subprojects with clangd and CodeLLDB support.",
   "version": "1.0.1",
   "publisher": "SiliconEmbedSoft",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/nikhilchaurasia2020/SiliconEmbedSoft"
+  },
   "icon": "icon.png",
   "author": {
     "name": "Nikhil Chaurasia",
