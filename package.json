@@ -11,8 +11,9 @@
   "icon": "icon.png",
   "author": {
     "name": "Nikhil Chaurasia",
-    "email": "nc4795.ericsson@gmail.com"
+    "email": "nikhilchaurasia2020@outlook.com"
   },
+  "license": "MIT",
   "engines": {
     "vscode": "^1.75.0"
   },
