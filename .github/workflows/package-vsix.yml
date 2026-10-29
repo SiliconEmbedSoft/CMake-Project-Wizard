@@ -1,0 +1,123 @@
+name: Package VSIX
+
+on:
+  push:
+    tags:
+      - 'v*'          # e.g. v1.0.1
+  workflow_dispatch:   # allow manual runs from the Actions tab
+    inputs:
+      create_tag:
+        description: 'Create and push a git tag from package.json version'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write      # needed to create tags and GitHub Releases
+
+jobs:
+  # ----------------------------------------------------------------
+  # Optional: create a git tag (vX.Y.Z) from package.json version.
+  # Runs only on manual dispatch when create_tag == true.
+  # ----------------------------------------------------------------
+  tag:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.create_tag }}
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.pkg.outputs.tag }}
+      created: ${{ steps.create.outputs.created }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # need full history/tags to check existence
+
+      - name: Read version from package.json
+        id: pkg
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Create and push tag
+        id: create
+        run: |
+          TAG="${{ steps.pkg.outputs.tag }}"
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists locally."
+            echo "created=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if git ls-remote --tags origin "refs/tags/$TAG" | grep -q "$TAG"; then
+            echo "Tag $TAG already exists on remote."
+            echo "created=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "Release $TAG"
+          git push origin "$TAG"
+          echo "Created and pushed tag $TAG."
+          echo "created=true" >> "$GITHUB_OUTPUT"
+
+  # ----------------------------------------------------------------
+  # Build the VSIX. Always runs. If the tag job ran, it waits for it
+  # but does not fail when the tag job is skipped.
+  # ----------------------------------------------------------------
+  package:
+    needs: [tag]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+
+      - name: Install vsce
+        run: npm install -g @vscode/vsce
+
+      - name: Read version from package.json
+        id: pkg
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          NAME=$(node -p "require('./package.json').name")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          echo "vsix=${NAME}-${VERSION}.vsix" >> "$GITHUB_OUTPUT"
+
+      - name: Package extension
+        run: vsce package --out "${{ steps.pkg.outputs.vsix }}"
+
+      - name: Upload VSIX artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.pkg.outputs.name }}-${{ steps.pkg.outputs.version }}
+          path: ${{ steps.pkg.outputs.vsix }}
+          if-no-files-found: error
+
+      - name: Create GitHub Release
+        # Publish a release when:
+        #  - triggered by a tag push, OR
+        #  - the optional tag job just created a new tag
+        if: >
+          startsWith(github.ref, 'refs/tags/v') ||
+          needs.tag.outputs.created == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.pkg.outputs.vsix }}
+          name: v${{ steps.pkg.outputs.version }}
+          tag_name: ${{ needs.tag.outputs.tag || github.ref_name }}
+          generate_release_notes: true
