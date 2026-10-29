@@ -1,12 +1,12 @@
 {
-  "name": "cmake-project-wizard",
-  "displayName": "CMake Project Wizard",
-  "description": "Scaffold modular C/C++ CMake subprojects with clangd and CodeLLDB support.",
-  "version": "1.0.1",
+  "name": "clion-suite",
+  "displayName": "CLion Suite for VS Code",
+  "description": "Replicate JetBrains CLion's modular CMake multi-target workflow, clangd IntelliSense, and LLDB-DAP debugging inside VS Code.",
+  "version": "1.0.0",
   "publisher": "siliconembedsoft-hq",
   "repository": {
     "type": "git",
-    "url": "https://github.com/SiliconEmbedSoft/CMake-Project-Wizard"
+    "url": "https://github.com/SiliconEmbedSoft/CLion-Suite-for-VSCode"
   },
   "icon": "icon.png",
   "author": {
@@ -19,19 +19,24 @@
   },
   "categories": [
     "Programming Languages",
+    "Debuggers",
     "Extension Packs",
     "Other"
   ],
   "keywords": [
+    "clion",
     "cmake",
     "c++",
+    "c",
     "clangd",
     "lldb",
-    "subproject"
+    "lldb-dap",
+    "subproject",
+    "multi-target"
   ],
   "main": "./extension.js",
   "activationEvents": [
-    "onCommand:quickCMakeWizard.newSubproject"
+    "onStartupFinished"
   ],
   "extensionPack": [
     "llvm-vs-code-extensions.vscode-clangd",
@@ -41,24 +46,105 @@
     "ms-vscode.cpptools-themes"
   ],
   "extensionDependencies": [
-    "ms-vscode.cmake-tools"
+    "llvm-vs-code-extensions.vscode-clangd",
+    "llvm-vs-code-extensions.lldb-dap",
+    "ms-vscode.cmake-tools",
+    "ms-vscode.cpp-devtools",
+    "ms-vscode.cpptools-themes"
   ],
   "contributes": {
     "commands": [
       {
-        "command": "quickCMakeWizard.newSubproject",
-        "title": "New CMake Project...",
-        "category": "CMake Wizard"
+        "command": "clionSuite.newSubproject",
+        "title": "New CMake Subproject...",
+        "category": "CLion Suite"
+      },
+      {
+        "command": "clionSuite.configure",
+        "title": "Configure CMake Project",
+        "category": "CLion Suite"
+      },
+      {
+        "command": "clionSuite.buildTarget",
+        "title": "Build Target",
+        "category": "CLion Suite"
+      },
+      {
+        "command": "clionSuite.runTarget",
+        "title": "Run Target",
+        "category": "CLion Suite"
+      },
+      {
+        "command": "clionSuite.debugTarget",
+        "title": "Debug Target",
+        "category": "CLion Suite"
+      },
+      {
+        "command": "clionSuite.selectActiveTarget",
+        "title": "Select Active Target",
+        "category": "CLion Suite"
+      },
+      {
+        "command": "clionSuite.selectBuildType",
+        "title": "Select Build Type",
+        "category": "CLion Suite"
+      },
+      {
+        "command": "clionSuite.syncWorkspace",
+        "title": "Sync Workspace Configuration",
+        "category": "CLion Suite"
       }
     ],
     "menus": {
       "explorer/context": [
         {
-          "command": "quickCMakeWizard.newSubproject",
+          "command": "clionSuite.newSubproject",
           "when": "explorerResourceIsFolder",
           "group": "navigation@100"
         }
+      ],
+      "commandPalette": [
+        {
+          "command": "clionSuite.buildTarget",
+          "when": "workspaceFolderCount != 0"
+        },
+        {
+          "command": "clionSuite.runTarget",
+          "when": "workspaceFolderCount != 0"
+        },
+        {
+          "command": "clionSuite.debugTarget",
+          "when": "workspaceFolderCount != 0"
+        }
       ]
+    },
+    "configuration": {
+      "title": "CLion Suite",
+      "properties": {
+        "clionSuite.defaultCppStandard": {
+          "type": "string",
+          "default": "20",
+          "enum": ["14", "17", "20", "23"],
+          "description": "Default C++ standard offered first in the scaffolding wizard."
+        },
+        "clionSuite.defaultCStandard": {
+          "type": "string",
+          "default": "17",
+          "enum": ["99", "11", "17", "23"],
+          "description": "Default C standard offered first in the scaffolding wizard."
+        },
+        "clionSuite.defaultBuildType": {
+          "type": "string",
+          "default": "Debug",
+          "enum": ["Debug", "Release", "RelWithDebInfo", "MinSizeRel"],
+          "description": "Default CMake build type (CLion-style configuration)."
+        },
+        "clionSuite.autoCleanupOnDelete": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically strip add_subdirectory() and launch.json entries when a subproject folder is deleted."
+        }
+      }
     }
   }
 }
