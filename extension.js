@@ -15,7 +15,7 @@ function toValidIdentifier(name) {
 }
 
 function getConfig() {
-  return vscode.workspace.getConfiguration('clionSuite');
+  return vscode.workspace.getConfiguration('cmakeProjectWizard');
 }
 
 function primaryWorkspaceRoot() {
@@ -192,7 +192,7 @@ function cleanupParentCMakeLists(parentDir, folderName) {
       fs.writeFileSync(parentCMakePath, content, 'utf8');
     }
   } catch (err) {
-    console.error(`[CLion Suite] Failed to clean CMakeLists.txt: ${err.message}`);
+    console.error(`[CMake Project Wizard] Failed to clean CMakeLists.txt: ${err.message}`);
   }
 }
 
@@ -395,20 +395,20 @@ let targetStatusItem;
 let buildTypeStatusItem;
 
 function updateStatusBar(context) {
-  const target = context.workspaceState.get('clionSuite.activeTarget', '(no target)');
+  const target = context.workspaceState.get('cmakeProjectWizard.activeTarget', '(no target)');
   const buildType = context.workspaceState.get(
-    'clionSuite.buildType',
+    'cmakeProjectWizard.buildType',
     getConfig().get('defaultBuildType', 'Debug')
   );
 
   if (targetStatusItem) {
     targetStatusItem.text = `$(target) ${target}`;
-    targetStatusItem.tooltip = 'CLion Suite: Active CMake Target';
+    targetStatusItem.tooltip = 'CMake Project Wizard: Active CMake Target';
     targetStatusItem.show();
   }
   if (buildTypeStatusItem) {
     buildTypeStatusItem.text = `$(gear) ${buildType}`;
-    buildTypeStatusItem.tooltip = 'CLion Suite: CMake Build Type';
+    buildTypeStatusItem.tooltip = 'CMake Project Wizard: CMake Build Type';
     buildTypeStatusItem.show();
   }
 }
@@ -420,12 +420,12 @@ function updateStatusBar(context) {
 async function cmdSelectActiveTarget(context) {
   const root = primaryWorkspaceRoot();
   if (!root) {
-    vscode.window.showErrorMessage('CLion Suite: No workspace folder open.');
+    vscode.window.showErrorMessage('CMake Project Wizard: No workspace folder open.');
     return;
   }
   const targets = discoverTargets(root);
   if (targets.length === 0) {
-    vscode.window.showWarningMessage('CLion Suite: No CMake subproject targets found.');
+    vscode.window.showWarningMessage('CMake Project Wizard: No CMake subproject targets found.');
     return;
   }
   const pick = await vscode.window.showQuickPick(targets, {
@@ -433,7 +433,7 @@ async function cmdSelectActiveTarget(context) {
     placeHolder: 'Choose the target to build/run/debug'
   });
   if (!pick) return;
-  await context.workspaceState.update('clionSuite.activeTarget', pick);
+  await context.workspaceState.update('cmakeProjectWizard.activeTarget', pick);
   updateStatusBar(context);
 }
 
@@ -443,7 +443,7 @@ async function cmdSelectBuildType(context) {
     { title: 'Select CMake Build Type', placeHolder: 'CLion-style configuration' }
   );
   if (!pick) return;
-  await context.workspaceState.update('clionSuite.buildType', pick);
+  await context.workspaceState.update('cmakeProjectWizard.buildType', pick);
 
   // Delegate to cmake-tools to apply the variant where possible
   try {
@@ -458,15 +458,15 @@ async function cmdConfigure() {
   try {
     await vscode.commands.executeCommand('cmake.configure');
   } catch (err) {
-    vscode.window.showErrorMessage(`CLion Suite: Configure failed. ${err.message}`);
+    vscode.window.showErrorMessage(`CMake Project Wizard: Configure failed. ${err.message}`);
   }
 }
 
 async function resolveActiveTarget(context) {
-  let target = context.workspaceState.get('clionSuite.activeTarget', null);
+  let target = context.workspaceState.get('cmakeProjectWizard.activeTarget', null);
   if (!target) {
     await cmdSelectActiveTarget(context);
-    target = context.workspaceState.get('clionSuite.activeTarget', null);
+    target = context.workspaceState.get('cmakeProjectWizard.activeTarget', null);
   }
   return target;
 }
@@ -477,9 +477,9 @@ async function cmdBuildTarget(context) {
   try {
     // Prefer cmake-tools driver; builds the whole project (clangd-friendly).
     await vscode.commands.executeCommand('cmake.build');
-    vscode.window.showInformationMessage(`CLion Suite: Build triggered (target: ${target}).`);
+    vscode.window.showInformationMessage(`CMake Project Wizard: Build triggered (target: ${target}).`);
   } catch (err) {
-    vscode.window.showErrorMessage(`CLion Suite: Build failed. ${err.message}`);
+    vscode.window.showErrorMessage(`CMake Project Wizard: Build failed. ${err.message}`);
   }
 }
 
@@ -494,7 +494,7 @@ async function cmdRunTarget(context) {
 
   if (!fs.existsSync(binaryPath)) {
     vscode.window.showWarningMessage(
-      `CLion Suite: Binary not found for "${target}". Build it first.`
+      `CMake Project Wizard: Binary not found for "${target}". Build it first.`
     );
     return;
   }
@@ -516,7 +516,7 @@ async function cmdDebugTarget(context) {
   const started = await vscode.debug.startDebugging(folder, configName);
   if (!started) {
     vscode.window.showErrorMessage(
-      `CLion Suite: Could not start lldb-dap session "${configName}".`
+      `CMake Project Wizard: Could not start lldb-dap session "${configName}".`
     );
   }
 }
@@ -528,7 +528,7 @@ async function cmdSyncWorkspace() {
     ensureWorkspaceSettings(root);
     ensureGitignore(root);
   }
-  vscode.window.showInformationMessage('CLion Suite: Workspace configuration synced.');
+  vscode.window.showInformationMessage('CMake Project Wizard: Workspace configuration synced.');
 }
 
 async function cmdNewSubproject(context, uri) {
@@ -539,7 +539,7 @@ async function cmdNewSubproject(context, uri) {
   } else if (primaryWorkspaceRoot()) {
     targetDir = primaryWorkspaceRoot();
   } else {
-    vscode.window.showErrorMessage('CLion Suite: No active workspace folder found.');
+    vscode.window.showErrorMessage('CMake Project Wizard: No active workspace folder found.');
     return;
   }
 
@@ -637,17 +637,17 @@ async function cmdNewSubproject(context, uri) {
     }
 
     // Set as active target for immediate build/run/debug
-    await context.workspaceState.update('clionSuite.activeTarget', trimmedName);
+    await context.workspaceState.update('cmakeProjectWizard.activeTarget', trimmedName);
     updateStatusBar(context);
 
     const textDoc = await vscode.workspace.openTextDocument(sourcePath);
     await vscode.window.showTextDocument(textDoc, { preview: false });
 
     vscode.window.showInformationMessage(
-      `CLion Suite: ${projectType} "${trimmedName}" created and set as active target.`
+      `CMake Project Wizard: ${projectType} "${trimmedName}" created and set as active target.`
     );
   } catch (err) {
-    vscode.window.showErrorMessage(`CLion Suite Error: ${err.message}`);
+    vscode.window.showErrorMessage(`CMake Project Wizard Error: ${err.message}`);
   }
 }
 
@@ -667,9 +667,9 @@ function activate(context) {
 
   // Status bar items (CLion-style active target + build type)
   targetStatusItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
-  targetStatusItem.command = 'clionSuite.selectActiveTarget';
+  targetStatusItem.command = 'cmakeProjectWizard.selectActiveTarget';
   buildTypeStatusItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 99);
-  buildTypeStatusItem.command = 'clionSuite.selectBuildType';
+  buildTypeStatusItem.command = 'cmakeProjectWizard.selectBuildType';
   context.subscriptions.push(targetStatusItem, buildTypeStatusItem);
   updateStatusBar(context);
 
@@ -686,9 +686,9 @@ function activate(context) {
     cleanupLaunchConfiguration(parentDir, folderName);
 
     // If the deleted folder was the active target, reset it
-    const active = context.workspaceState.get('clionSuite.activeTarget', null);
+    const active = context.workspaceState.get('cmakeProjectWizard.activeTarget', null);
     if (active === folderName) {
-      context.workspaceState.update('clionSuite.activeTarget', null);
+      context.workspaceState.update('cmakeProjectWizard.activeTarget', null);
       updateStatusBar(context);
     }
   });
@@ -696,20 +696,20 @@ function activate(context) {
 
   // Command registration
   context.subscriptions.push(
-    vscode.commands.registerCommand('clionSuite.newSubproject', (uri) =>
+    vscode.commands.registerCommand('cmakeProjectWizard.newSubproject', (uri) =>
       cmdNewSubproject(context, uri)
     ),
-    vscode.commands.registerCommand('clionSuite.configure', () => cmdConfigure()),
-    vscode.commands.registerCommand('clionSuite.buildTarget', () => cmdBuildTarget(context)),
-    vscode.commands.registerCommand('clionSuite.runTarget', () => cmdRunTarget(context)),
-    vscode.commands.registerCommand('clionSuite.debugTarget', () => cmdDebugTarget(context)),
-    vscode.commands.registerCommand('clionSuite.selectActiveTarget', () =>
+    vscode.commands.registerCommand('cmakeProjectWizard.configure', () => cmdConfigure()),
+    vscode.commands.registerCommand('cmakeProjectWizard.buildTarget', () => cmdBuildTarget(context)),
+    vscode.commands.registerCommand('cmakeProjectWizard.runTarget', () => cmdRunTarget(context)),
+    vscode.commands.registerCommand('cmakeProjectWizard.debugTarget', () => cmdDebugTarget(context)),
+    vscode.commands.registerCommand('cmakeProjectWizard.selectActiveTarget', () =>
       cmdSelectActiveTarget(context)
     ),
-    vscode.commands.registerCommand('clionSuite.selectBuildType', () =>
+    vscode.commands.registerCommand('cmakeProjectWizard.selectBuildType', () =>
       cmdSelectBuildType(context)
     ),
-    vscode.commands.registerCommand('clionSuite.syncWorkspace', () => cmdSyncWorkspace())
+    vscode.commands.registerCommand('cmakeProjectWizard.syncWorkspace', () => cmdSyncWorkspace())
   );
 }
 
