@@ -4,7 +4,7 @@ on:
   push:
     tags:
       - 'v*'          # e.g. v1.0.1
-  workflow_dispatch:   # allow manual runs from the Actions tab
+  workflow_dispatch:
     inputs:
       create_tag:
         description: 'Create and push a git tag from package.json version'
@@ -12,12 +12,11 @@ on:
         default: false
 
 permissions:
-  contents: write      # needed to create tags and GitHub Releases
+  contents: write
 
 jobs:
   # ----------------------------------------------------------------
   # Optional: create a git tag (vX.Y.Z) from package.json version.
-  # Runs only on manual dispatch when create_tag == true.
   # ----------------------------------------------------------------
   tag:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.create_tag }}
@@ -56,17 +55,18 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git tag -a "$TAG" -m "Release $TAG"
           git push origin "$TAG"
-          echo "Created and pushed tag $TAG."
           echo "created=true" >> "$GITHUB_OUTPUT"
 
   # ----------------------------------------------------------------
-  # Build the VSIX. Always runs.
+  # STEP 1: Build the VSIX first. Always runs.
   # ----------------------------------------------------------------
   package:
     needs: [tag]
     if: ${{ always() }}
     runs-on: ubuntu-latest
-
+    outputs:
+      vsix: ${{ steps.pkg.outputs.vsix }}
+      version: ${{ steps.pkg.outputs.version }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -97,23 +97,37 @@ jobs:
           echo "name=$NAME" >> "$GITHUB_OUTPUT"
           echo "vsix=${NAME}-${VERSION}.vsix" >> "$GITHUB_OUTPUT"
 
-      - name: Package extension
+      - name: Package extension (build VSIX)
         run: vsce package --out "${{ steps.pkg.outputs.vsix }}"
 
       - name: Upload VSIX artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ steps.pkg.outputs.name }}-${{ steps.pkg.outputs.version }}
+          name: vsix-package
           path: ${{ steps.pkg.outputs.vsix }}
           if-no-files-found: error
 
+  # ----------------------------------------------------------------
+  # STEP 2: Release AFTER the VSIX is built. Downloads the artifact
+  # and attaches it to the GitHub Release.
+  # ----------------------------------------------------------------
+  release:
+    needs: [tag, package]
+    if: >
+      ${{ always() &&
+          needs.package.result == 'success' &&
+          (startsWith(github.ref, 'refs/tags/v') || needs.tag.outputs.created == 'true') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download VSIX artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: vsix-package
+
       - name: Create GitHub Release
-        if: >
-          startsWith(github.ref, 'refs/tags/v') ||
-          needs.tag.outputs.created == 'true'
         uses: softprops/action-gh-release@v2
         with:
-          files: ${{ steps.pkg.outputs.vsix }}
-          name: v${{ steps.pkg.outputs.version }}
+          files: ${{ needs.package.outputs.vsix }}
+          name: v${{ needs.package.outputs.version }}
           tag_name: ${{ needs.tag.outputs.tag || github.ref_name }}
           generate_release_notes: true
