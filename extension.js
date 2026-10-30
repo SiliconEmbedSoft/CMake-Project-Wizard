@@ -23,17 +23,11 @@ function primaryWorkspaceRoot() {
   return folders && folders.length > 0 ? folders[0].uri.fsPath : null;
 }
 
-/* ------------------------------------------------------------
- * NEW: project validity + stale build helpers
- * ---------------------------------------------------------- */
-
-// True if the root has a usable CMake project.
 function hasValidRootProject(root) {
   if (!root) return false;
   return fs.existsSync(path.join(root, 'CMakeLists.txt'));
 }
 
-// True if a build dir exists but its cache points at a now-missing source dir.
 function buildCacheIsStale(root) {
   const cachePath = path.join(root, 'build', 'CMakeCache.txt');
   if (!fs.existsSync(cachePath)) return false;
@@ -47,13 +41,11 @@ function buildCacheIsStale(root) {
       }
     }
   } catch {
-    // Unreadable cache is effectively stale.
     return true;
   }
   return false;
 }
 
-// NEW: clear a stale build dir after confirming with the user.
 async function clearStaleBuildDir(root) {
   const buildDir = path.join(root, 'build');
   if (!fs.existsSync(buildDir)) return true;
@@ -76,7 +68,6 @@ async function clearStaleBuildDir(root) {
   }
 }
 
-// NEW: guard used before any CMake-dependent command runs.
 async function ensureProjectReady(root) {
   if (!root) {
     vscode.window.showErrorMessage('CMake Project Wizard: No workspace folder open.');
@@ -103,20 +94,45 @@ async function ensureProjectReady(root) {
   return true;
 }
 
-// NEW: trigger a CMake Tools reconfigure so freshly scaffolded targets
-// appear live (no window reload). Safe no-op if cmake-tools is unavailable.
 async function triggerReconfigure() {
   if (!getConfig().get('autoReconfigureAfterScaffold', true)) return;
   try {
     await vscode.commands.executeCommand('cmake.configure');
   } catch {
-    // cmake-tools may not expose the command in every version/state.
+    // Ignore if cmake-tools is not ready
   }
 }
 
 /* ============================================================
- * CMake / Source Templates
+ * CLion-Style Subproject Scaffolding & Hierarchy Helpers
  * ============================================================ */
+
+function resolveSubprojectContext(uri) {
+  const root = primaryWorkspaceRoot();
+  let clickedPath = uri && uri.fsPath ? uri.fsPath : root;
+
+  if (fs.existsSync(clickedPath) && !fs.statSync(clickedPath).isDirectory()) {
+    clickedPath = path.dirname(clickedPath);
+  }
+
+  let current = clickedPath;
+  while (current && current !== path.dirname(current)) {
+    if (fs.existsSync(path.join(current, 'CMakeLists.txt')) && current !== root) {
+      return current;
+    }
+    if (current === root) break;
+    current = path.dirname(current);
+  }
+
+  // Fallback to active target directory if inside workspace root
+  const active = targetStatusItem ? targetStatusItem.text.replace('$(target) ', '').trim() : null;
+  if (active && active !== '(no target)' && root) {
+    const candidate = path.join(root, active);
+    if (fs.existsSync(candidate)) return candidate;
+  }
+
+  return clickedPath;
+}
 
 function getSubprojectCMakeLists(projectName, language, standard, projectType) {
   const isCpp = language === 'C++';
@@ -228,7 +244,7 @@ int main(int argc, char* argv[]) {
 }
 
 /* ============================================================
- * Root CMakeLists Wiring
+ * Root CMakeLists & launch.json Wiring
  * ============================================================ */
 
 function linkParentCMakeLists(parentDir, subprojectName) {
@@ -285,10 +301,6 @@ function cleanupParentCMakeLists(parentDir, folderName) {
     console.error(`[CMake Project Wizard] Failed to clean CMakeLists.txt: ${err.message}`);
   }
 }
-
-/* ============================================================
- * launch.json (lldb-dap)
- * ============================================================ */
 
 function registerLaunchConfiguration(rootFolder, projectName) {
   const vscodeDir = path.join(rootFolder, '.vscode');
@@ -355,13 +367,9 @@ function cleanupLaunchConfiguration(rootFolder, folderName) {
       }
     }
   } catch {
-    // Ignore JSON parsing errors
+    // Ignore parse errors
   }
 }
-
-/* ============================================================
- * .gitignore + workspace settings (clangd wiring)
- * ============================================================ */
 
 function ensureGitignore(rootFolder) {
   const gitignorePath = path.join(rootFolder, '.gitignore');
@@ -438,8 +446,6 @@ function ensureWorkspaceSettings(rootFolder) {
     modified = true;
   }
 
-  // NEW: default the generator to Ninja so CMake Tools never prompts
-  // "Unable to determine what CMake generator to use".
   if (settings['cmake.generator'] === undefined) {
     settings['cmake.generator'] = 'Ninja';
     modified = true;
@@ -451,7 +457,7 @@ function ensureWorkspaceSettings(rootFolder) {
 }
 
 /* ============================================================
- * Target discovery (CLion-style target dropdown)
+ * Target Discovery & Status Bar
  * ============================================================ */
 
 function discoverTargets(rootFolder) {
@@ -478,10 +484,6 @@ function discoverTargets(rootFolder) {
   return targets;
 }
 
-/* ============================================================
- * Status bar: active target + build type (CLion-style)
- * ============================================================ */
-
 let targetStatusItem;
 let buildTypeStatusItem;
 
@@ -492,8 +494,6 @@ function updateStatusBar(context) {
     getConfig().get('defaultBuildType', 'Debug')
   );
 
-  // NEW: hide the status bar entirely when there's no valid root project,
-  // so stale controls don't linger after a project is deleted.
   const root = primaryWorkspaceRoot();
   const projectExists = hasValidRootProject(root);
 
@@ -538,6 +538,11 @@ async function cmdSelectActiveTarget(context) {
   });
   if (!pick) return;
   await context.workspaceState.update('cmakeProjectWizard.activeTarget', pick);
+  try {
+    await vscode.commands.executeCommand('cmake.setDefaultTarget', pick);
+  } catch {
+    // Ignore if command is absent
+  }
   updateStatusBar(context);
 }
 
@@ -552,13 +557,12 @@ async function cmdSelectBuildType(context) {
   try {
     await vscode.commands.executeCommand('cmake.setBuildType', pick);
   } catch {
-    // cmake-tools may expose this differently across versions
+    // Ignore cross-version differences
   }
   updateStatusBar(context);
 }
 
 async function cmdConfigure() {
-  // CHANGED: guard before configuring so a deleted project gives a clear message.
   const root = primaryWorkspaceRoot();
   if (!(await ensureProjectReady(root))) return;
 
@@ -571,7 +575,7 @@ async function cmdConfigure() {
 
 async function resolveActiveTarget(context) {
   let target = context.workspaceState.get('cmakeProjectWizard.activeTarget', null);
-  if (!target) {
+  if (!target || target === '(no target)') {
     await cmdSelectActiveTarget(context);
     target = context.workspaceState.get('cmakeProjectWizard.activeTarget', null);
   }
@@ -579,8 +583,6 @@ async function resolveActiveTarget(context) {
 }
 
 async function cmdBuildTarget(context) {
-  // CHANGED: guard first — catches deleted project / stale build cache
-  // before the raw CMake error you were seeing.
   const root = primaryWorkspaceRoot();
   if (!(await ensureProjectReady(root))) return;
 
@@ -596,7 +598,6 @@ async function cmdBuildTarget(context) {
 
 async function cmdRunTarget(context) {
   const root = primaryWorkspaceRoot();
-  // CHANGED: guard first.
   if (!(await ensureProjectReady(root))) return;
 
   const target = await resolveActiveTarget(context);
@@ -620,7 +621,6 @@ async function cmdRunTarget(context) {
 
 async function cmdDebugTarget(context) {
   const root = primaryWorkspaceRoot();
-  // CHANGED: guard first.
   if (!(await ensureProjectReady(root))) return;
 
   const target = await resolveActiveTarget(context);
@@ -754,13 +754,16 @@ async function cmdNewSubproject(context, uri) {
     }
 
     await context.workspaceState.update('cmakeProjectWizard.activeTarget', trimmedName);
+    try {
+      await vscode.commands.executeCommand('cmake.setDefaultTarget', trimmedName);
+    } catch {
+      // Ignore if cmake-tools is initializing
+    }
     updateStatusBar(context);
 
     const textDoc = await vscode.workspace.openTextDocument(sourcePath);
     await vscode.window.showTextDocument(textDoc, { preview: false });
 
-    // NEW: reconfigure so CMake Tools picks up the new target immediately —
-    // this is what removes the "need to reload window" problem.
     await triggerReconfigure();
 
     vscode.window.showInformationMessage(
@@ -772,7 +775,112 @@ async function cmdNewSubproject(context, uri) {
 }
 
 /* ============================================================
- * Lifecycle
+ * CLion-Style File Scaffolding Handlers
+ * ============================================================ */
+
+async function cmdNewCppClass(uri) {
+  const subprojectDir = resolveSubprojectContext(uri);
+  const className = await vscode.window.showInputBox({
+    title: 'New C++ Class',
+    prompt: 'Enter class name (e.g. EngineController)',
+    placeHolder: 'EngineController',
+    validateInput: (v) => (/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(v ? v.trim() : '') ? null : 'Invalid C++ class identifier')
+  });
+  if (!className) return;
+
+  const validName = className.trim();
+  const includeDir = path.join(subprojectDir, 'include');
+  const srcDir = path.join(subprojectDir, 'src');
+
+  fs.mkdirSync(includeDir, { recursive: true });
+  fs.mkdirSync(srcDir, { recursive: true });
+
+  const headerPath = path.join(includeDir, `${validName}.hpp`);
+  const sourcePath = path.join(srcDir, `${validName}.cpp`);
+
+  const headerContent = `#pragma once
+
+class ${validName} {
+public:
+    ${validName}();
+    virtual ~${validName}();
+
+private:
+};
+`;
+
+  const sourceContent = `#include "${validName}.hpp"
+
+${validName}::${validName}() {
+}
+
+${validName}::~${validName}() {
+}
+`;
+
+  if (!fs.existsSync(headerPath)) {
+    fs.writeFileSync(headerPath, headerContent, 'utf8');
+  }
+  if (!fs.existsSync(sourcePath)) {
+    fs.writeFileSync(sourcePath, sourceContent, 'utf8');
+  }
+
+  const doc = await vscode.workspace.openTextDocument(sourcePath);
+  await vscode.window.showTextDocument(doc, { preview: false });
+}
+
+async function cmdNewSourceFile(uri) {
+  const subprojectDir = resolveSubprojectContext(uri);
+  const fileName = await vscode.window.showInputBox({
+    title: 'New C/C++ Source File',
+    prompt: 'Enter file name (defaults to .cpp if extension is omitted)',
+    placeHolder: 'utils.cpp or helper.c'
+  });
+  if (!fileName) return;
+
+  const trimmed = fileName.trim();
+  const finalName = path.extname(trimmed) !== '' ? trimmed : `${trimmed}.cpp`;
+  const destDir = path.join(subprojectDir, 'src');
+  fs.mkdirSync(destDir, { recursive: true });
+
+  const filePath = path.join(destDir, finalName);
+  if (!fs.existsSync(filePath)) {
+    const isCpp = finalName.endsWith('.cpp') || finalName.endsWith('.cxx') || finalName.endsWith('.cc');
+    const template = isCpp
+      ? '#include <iostream>\n\n'
+      : '#include <stdio.h>\n\n';
+    fs.writeFileSync(filePath, template, 'utf8');
+  }
+
+  const doc = await vscode.workspace.openTextDocument(filePath);
+  await vscode.window.showTextDocument(doc, { preview: false });
+}
+
+async function cmdNewHeaderFile(uri) {
+  const subprojectDir = resolveSubprojectContext(uri);
+  const fileName = await vscode.window.showInputBox({
+    title: 'New C/C++ Header File',
+    prompt: 'Enter header name (defaults to .hpp if extension is omitted)',
+    placeHolder: 'types.hpp or common.h'
+  });
+  if (!fileName) return;
+
+  const trimmed = fileName.trim();
+  const finalName = path.extname(trimmed) !== '' ? trimmed : `${trimmed}.hpp`;
+  const destDir = path.join(subprojectDir, 'include');
+  fs.mkdirSync(destDir, { recursive: true });
+
+  const filePath = path.join(destDir, finalName);
+  if (!fs.existsSync(filePath)) {
+    fs.writeFileSync(filePath, '#pragma once\n\n', 'utf8');
+  }
+
+  const doc = await vscode.workspace.openTextDocument(filePath);
+  await vscode.window.showTextDocument(doc, { preview: false });
+}
+
+/* ============================================================
+ * Lifecycle & Watchers
  * ============================================================ */
 
 function activate(context) {
@@ -793,28 +901,48 @@ function activate(context) {
 
   const fileWatcher = vscode.workspace.createFileSystemWatcher('**/*', false, false, false);
 
-  fileWatcher.onDidDelete((uri) => {
+  fileWatcher.onDidDelete(async (uri) => {
     if (!getConfig().get('autoCleanupOnDelete', true)) return;
 
     const deletedPath = uri.fsPath;
     const parentDir = path.dirname(deletedPath);
     const folderName = path.basename(deletedPath);
 
+    // 1. Clean root CMakeLists.txt and launch.json configurations
     cleanupParentCMakeLists(parentDir, folderName);
     cleanupLaunchConfiguration(parentDir, folderName);
 
+    // 2. Clear state if the active subproject was deleted
     const active = context.workspaceState.get('cmakeProjectWizard.activeTarget', null);
     if (active === folderName) {
-      context.workspaceState.update('cmakeProjectWizard.activeTarget', null);
+      const remainingTargets = discoverTargets(parentDir);
+      const nextTarget = remainingTargets.length > 0 ? remainingTargets[0] : null;
+
+      await context.workspaceState.update('cmakeProjectWizard.activeTarget', nextTarget);
+
+      try {
+        if (nextTarget) {
+          await vscode.commands.executeCommand('cmake.setDefaultTarget', nextTarget);
+        }
+      } catch {
+        // Ignore if cmake-tools is idle
+      }
     }
 
-    // CHANGED: always refresh the status bar so it hides/updates when
-    // a project (or its root CMakeLists.txt) is deleted.
+    // 3. Clean and reconfigure so Ninja removes orphaned targets from build.ninja
+    try {
+      await vscode.commands.executeCommand('cmake.cleanReconfigure');
+    } catch {
+      try {
+        await vscode.commands.executeCommand('cmake.configure');
+      } catch {
+        // Ignore fallback
+      }
+    }
+
     updateStatusBar(context);
   });
 
-  // NEW: when a CMakeLists.txt (re)appears, refresh status bar and
-  // reconfigure so targets show up without a reload.
   fileWatcher.onDidCreate((uri) => {
     if (path.basename(uri.fsPath) === 'CMakeLists.txt') {
       updateStatusBar(context);
@@ -824,7 +952,6 @@ function activate(context) {
 
   context.subscriptions.push(fileWatcher);
 
-  // NEW: refresh status bar when workspace roots change (folder removed/added).
   context.subscriptions.push(
     vscode.workspace.onDidChangeWorkspaceFolders(() => {
       updateStatusBar(context);
@@ -834,6 +961,15 @@ function activate(context) {
   context.subscriptions.push(
     vscode.commands.registerCommand('cmakeProjectWizard.newSubproject', (uri) =>
       cmdNewSubproject(context, uri)
+    ),
+    vscode.commands.registerCommand('cmakeProjectWizard.newCppClass', (uri) =>
+      cmdNewCppClass(uri)
+    ),
+    vscode.commands.registerCommand('cmakeProjectWizard.newSourceFile', (uri) =>
+      cmdNewSourceFile(uri)
+    ),
+    vscode.commands.registerCommand('cmakeProjectWizard.newHeaderFile', (uri) =>
+      cmdNewHeaderFile(uri)
     ),
     vscode.commands.registerCommand('cmakeProjectWizard.configure', () => cmdConfigure()),
     vscode.commands.registerCommand('cmakeProjectWizard.buildTarget', () => cmdBuildTarget(context)),
