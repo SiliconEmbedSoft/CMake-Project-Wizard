@@ -47,6 +47,13 @@
     "ms-vscode.cpp-devtools",
     "ms-vscode.cpptools-themes"
   ],
+  "extensionPack": [
+    "llvm-vs-code-extensions.vscode-clangd",
+    "llvm-vs-code-extensions.lldb-dap",
+    "ms-vscode.cmake-tools",
+    "ms-vscode.cpp-devtools",
+    "ms-vscode.cpptools-themes"
+  ],
   "main": "./extension.js",
   "contributes": {
     "commands": [
