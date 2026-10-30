@@ -11,7 +11,7 @@
   "icon": "icon.png",
   "author": {
     "name": "Nikhil Chaurasia",
-    "email": "nikhilchaurasia2020@outlook.com"
+    "email": "<EMAIL_ADDRESS>"
   },
   "license": "MIT",
   "engines": {
@@ -54,23 +54,18 @@
         "category": "CMake Project Wizard"
       },
       {
-        "command": "cmakeProjectWizard.newCSource",
-        "title": "C Source File (.c)",
-        "category": "CMake Project Wizard"
-      },
-      {
-        "command": "cmakeProjectWizard.newCppSource",
-        "title": "C++ Source File (.cpp)",
+        "command": "cmakeProjectWizard.newSource",
+        "title": "Source File (C / C++)",
         "category": "CMake Project Wizard"
       },
       {
         "command": "cmakeProjectWizard.newHeader",
-        "title": "Header File (.h/.hpp)",
+        "title": "Header File (C / C++)",
         "category": "CMake Project Wizard"
       },
       {
         "command": "cmakeProjectWizard.newLibraryTarget",
-        "title": "Library Target (CMake)",
+        "title": "Library Target (C / C++)",
         "category": "CMake Project Wizard"
       },
       {
@@ -109,16 +104,12 @@
       ],
       "cmakeProjectWizard.newFile": [
         {
-          "command": "cmakeProjectWizard.newCSource",
+          "command": "cmakeProjectWizard.newSource",
           "group": "1_source@1"
         },
         {
-          "command": "cmakeProjectWizard.newCppSource",
-          "group": "1_source@2"
-        },
-        {
           "command": "cmakeProjectWizard.newHeader",
-          "group": "1_source@3"
+          "group": "1_source@2"
         },
         {
           "command": "cmakeProjectWizard.newLibraryTarget",
@@ -133,12 +124,14 @@
           "cmakeProjectWizard.general.defaultLicense": {
             "type": "string",
             "default": "MIT",
-            "description": "Default license for new projects."
+            "markdownDescription": "Default license for new projects.",
+            "order": 1
           },
           "cmakeProjectWizard.general.commitLockfiles": {
             "type": "boolean",
             "default": false,
-            "description": "Whether to include lockfiles in generated .gitignore."
+            "markdownDescription": "Whether to include lockfiles in generated `.gitignore`.",
+            "order": 2
           }
         }
       },
@@ -149,24 +142,28 @@
             "type": "string",
             "default": "20",
             "enum": ["11", "14", "17", "20", "23"],
-            "description": "Default C++ standard for new projects."
+            "markdownDescription": "Default C++ standard for new projects.",
+            "order": 1
           },
           "cmakeProjectWizard.cmake.cStandard": {
             "type": "string",
             "default": "17",
             "enum": ["99", "11", "17", "23"],
-            "description": "Default C standard for new projects."
+            "markdownDescription": "Default C standard for new projects.",
+            "order": 2
           },
           "cmakeProjectWizard.cmake.minimumRequired": {
             "type": "string",
             "default": "3.21",
-            "description": "cmake_minimum_required version for new projects."
+            "markdownDescription": "`cmake_minimum_required` version for new projects.",
+            "order": 3
           },
           "cmakeProjectWizard.cmake.defaultBuildType": {
             "type": "string",
             "default": "Debug",
             "enum": ["Debug", "Release", "RelWithDebInfo", "MinSizeRel"],
-            "description": "Default build type for new projects."
+            "markdownDescription": "Default build type for new projects.",
+            "order": 4
           }
         }
       },
@@ -176,12 +173,14 @@
           "cmakeProjectWizard.presets.generator": {
             "type": "string",
             "default": "Ninja",
-            "description": "Default generator for new projects."
+            "markdownDescription": "Default generator for new projects.",
+            "order": 1
           },
           "cmakeProjectWizard.presets.binaryDir": {
             "type": "string",
             "default": "${sourceDir}/build",
-            "description": "Default binary directory for configure presets."
+            "markdownDescription": "Default binary directory for configure presets.",
+            "order": 2
           }
         }
       },
@@ -191,22 +190,26 @@
           "cmakeProjectWizard.statusBar.showTarget": {
             "type": "boolean",
             "default": true,
-            "description": "Show the active target in the status bar."
+            "markdownDescription": "Status Bar: show the active target item.",
+            "order": 1
           },
           "cmakeProjectWizard.statusBar.showBuildType": {
             "type": "boolean",
             "default": true,
-            "description": "Show the build type in the status bar."
+            "markdownDescription": "Status Bar: show the build type item.",
+            "order": 2
           },
           "cmakeProjectWizard.statusBar.targetPriority": {
             "type": "number",
-            "default": 10,
-            "description": "Status bar priority for the target item (higher = further left). Start low so it sits right of clangd/debug."
+            "default": 49,
+            "markdownDescription": "Status Bar: priority for the target item (higher = further left).",
+            "order": 3
           },
           "cmakeProjectWizard.statusBar.buildTypePriority": {
             "type": "number",
-            "default": 9,
-            "description": "Status bar priority for the build type item."
+            "default": 49,
+            "markdownDescription": "Status Bar: priority for the build type item (higher = further left).",
+            "order": 4
           }
         }
       }
