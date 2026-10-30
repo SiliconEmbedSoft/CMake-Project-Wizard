@@ -2,7 +2,7 @@
   "name": "cmake-project-wizard",
   "displayName": "CMake Project Wizard",
   "description": "Scaffold modular C/C++ CMake subprojects with a CLion-style workflow, clangd IntelliSense, and LLDB-DAP debugging.",
-  "version": "1.2.7",
+  "version": "1.2.8",
   "publisher": "siliconembedsoft-hq",
   "repository": {
     "type": "git",
