@@ -1,4 +1,3 @@
-// v1.3.1
 const vscode = require('vscode');
 const path = require('path');
 
