@@ -14,8 +14,8 @@ let activeBuildType = 'Debug';
 function createStatusBarItems(context) {
   const cfg = vscode.workspace.getConfiguration('cmakeProjectWizard');
 
-  const targetPriority = cfg.get('statusBar.targetPriority', 10);
-  const buildTypePriority = cfg.get('statusBar.buildTypePriority', 9);
+  const targetPriority = cfg.get('statusBar.targetPriority', 49);
+  const buildTypePriority = cfg.get('statusBar.buildTypePriority', 49);
 
   if (targetStatusItem) {
     targetStatusItem.dispose();
@@ -67,11 +67,49 @@ function updateStatusBar() {
   }
 }
 
+/* ------------------------------------------------------------------ */
+/* Target discovery for the dropdown                                   */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Collect candidate targets by scanning CMakeLists.txt files for
+ * add_executable(<name> ...) and add_library(<name> ...). This gives a
+ * dropdown instead of free-text input.
+ */
+async function discoverTargets() {
+  const targets = new Set(['all']);
+
+  const files = await vscode.workspace.findFiles(
+    '**/CMakeLists.txt',
+    '**/build/**'
+  );
+
+  const re = /\badd_(?:executable|library)\s*\(\s*([A-Za-z0-9_]+)/g;
+
+  for (const file of files) {
+    try {
+      const bytes = await vscode.workspace.fs.readFile(file);
+      const text = Buffer.from(bytes).toString('utf8').replace(/#.*$/gm, '');
+      let m;
+      while ((m = re.exec(text)) !== null) {
+        targets.add(m[1]);
+      }
+    } catch {
+      // ignore unreadable file
+    }
+  }
+
+  return Array.from(targets);
+}
+
 async function selectActiveTarget() {
-  const picked = await vscode.window.showInputBox({
-    prompt: 'Active target name',
-    value: activeTarget
+  const targets = await discoverTargets();
+
+  const picked = await vscode.window.showQuickPick(targets, {
+    placeHolder: 'Select active target',
+    matchOnDescription: true
   });
+
   if (picked) {
     activeTarget = picked;
     updateStatusBar();
@@ -111,31 +149,38 @@ async function writeText(uri, text) {
   await vscode.workspace.fs.writeFile(uri, Buffer.from(text, 'utf8'));
 }
 
+function sanitizeName(name) {
+  return name.replace(/[^A-Za-z0-9_]/g, '_');
+}
+
 /**
- * Returns true if folder root CMakeLists.txt uses add_subdirectory(),
- * OR if any immediate child folder contains its own CMakeLists.txt.
- * Either is a strong signal that this folder hosts subprojects and must
- * NOT be converted to a single project.
+ * Classify a folder:
+ *   'subprojects' -> root uses add_subdirectory() or has nested CMakeLists.txt
+ *   'single'      -> root CMakeLists.txt defines project()/targets but no subdirs
+ *   'none'        -> no CMake structure yet
  */
-async function hasSubprojects(folderUri) {
+async function classifyFolder(folderUri) {
   const rootCmake = vscode.Uri.joinPath(folderUri, 'CMakeLists.txt');
+
+  let rootText = null;
   try {
-    const text = await readText(rootCmake);
-    const stripped = text.replace(/#.*$/gm, '');
-    if (/\badd_subdirectory\s*\(/.test(stripped)) {
-      return true;
-    }
+    rootText = (await readText(rootCmake)).replace(/#.*$/gm, '');
   } catch {
-    // no root CMakeLists.txt; keep checking children below
+    rootText = null;
   }
 
+  if (rootText && /\badd_subdirectory\s*\(/.test(rootText)) {
+    return 'subprojects';
+  }
+
+  // Nested CMakeLists.txt in any immediate child folder => subprojects.
   try {
     const entries = await vscode.workspace.fs.readDirectory(folderUri);
     for (const [name, type] of entries) {
-      if (type === vscode.FileType.Directory) {
+      if (type === vscode.FileType.Directory && name !== 'build') {
         const childCmake = vscode.Uri.joinPath(folderUri, name, 'CMakeLists.txt');
         if (await fileExists(childCmake)) {
-          return true;
+          return 'subprojects';
         }
       }
     }
@@ -143,38 +188,62 @@ async function hasSubprojects(folderUri) {
     // ignore
   }
 
-  return false;
+  if (rootText) {
+    const isProject = /\bproject\s*\(/.test(rootText);
+    const hasTarget = /\badd_(?:executable|library)\s*\(/.test(rootText);
+    if (isProject || hasTarget) {
+      return 'single';
+    }
+  }
+
+  return 'none';
 }
 
-function sanitizeName(name) {
-  return name.replace(/[^A-Za-z0-9_]/g, '_');
+/* ------------------------------------------------------------------ */
+/* Language selection                                                  */
+/* ------------------------------------------------------------------ */
+
+async function pickLanguage() {
+  const picked = await vscode.window.showQuickPick(
+    [
+      { label: 'C++', value: 'cpp' },
+      { label: 'C', value: 'c' }
+    ],
+    { placeHolder: 'Select language' }
+  );
+  return picked ? picked.value : undefined;
 }
 
 /* ------------------------------------------------------------------ */
 /* Single-project conversion                                           */
 /* ------------------------------------------------------------------ */
 
-function buildRootCmakeLists(projectName, cfg) {
+function buildRootCmakeLists(projectName, lang, cfg) {
   const minReq = cfg.get('cmake.minimumRequired', '3.21');
   const cxx = cfg.get('cmake.cxxStandard', '20');
   const c = cfg.get('cmake.cStandard', '17');
   const buildType = cfg.get('cmake.defaultBuildType', 'Debug');
 
+  const languages = lang === 'c' ? 'C' : 'C CXX';
+  const mainFile = lang === 'c' ? 'src/main.c' : 'src/main.cpp';
+
+  const stdBlock =
+    lang === 'c'
+      ? `set(CMAKE_C_STANDARD ${c})\nset(CMAKE_C_STANDARD_REQUIRED ON)`
+      : `set(CMAKE_C_STANDARD ${c})\nset(CMAKE_C_STANDARD_REQUIRED ON)\nset(CMAKE_CXX_STANDARD ${cxx})\nset(CMAKE_CXX_STANDARD_REQUIRED ON)`;
+
   return `cmake_minimum_required(VERSION ${minReq})
 
-project(${projectName} LANGUAGES C CXX)
+project(${projectName} LANGUAGES ${languages})
 
-set(CMAKE_C_STANDARD ${c})
-set(CMAKE_C_STANDARD_REQUIRED ON)
-set(CMAKE_CXX_STANDARD ${cxx})
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
+${stdBlock}
 
 if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE ${buildType} CACHE STRING "Build type" FORCE)
 endif()
 
 add_executable(${projectName}
-  src/main.cpp
+  ${mainFile}
 )
 
 target_include_directories(${projectName} PRIVATE include)
@@ -214,21 +283,32 @@ int main() {
 }
 `;
 
-async function scaffoldSrcAndInclude(folderUri, projectName) {
-  // src/main.cpp
+const SAMPLE_MAIN_C =
+`#include <stdio.h>
+
+int main(void) {
+    printf("Hello, CMake!\\n");
+    return 0;
+}
+`;
+
+async function scaffoldSrcAndInclude(folderUri, projectName, lang) {
   const srcDir = vscode.Uri.joinPath(folderUri, 'src');
-  const mainCpp = vscode.Uri.joinPath(srcDir, 'main.cpp');
-  if (!(await fileExists(mainCpp))) {
+  const mainFile = vscode.Uri.joinPath(
+    srcDir,
+    lang === 'c' ? 'main.c' : 'main.cpp'
+  );
+  if (!(await fileExists(mainFile))) {
     await vscode.workspace.fs.createDirectory(srcDir);
-    await writeText(mainCpp, SAMPLE_MAIN_CPP);
+    await writeText(mainFile, lang === 'c' ? SAMPLE_MAIN_C : SAMPLE_MAIN_CPP);
   }
 
-  // include/<projectName>/<projectName>.hpp
   const includeDir = vscode.Uri.joinPath(folderUri, 'include', projectName);
-  const header = vscode.Uri.joinPath(includeDir, `${projectName}.hpp`);
+  const headerExt = lang === 'c' ? 'h' : 'hpp';
+  const header = vscode.Uri.joinPath(includeDir, `${projectName}.${headerExt}`);
   if (!(await fileExists(header))) {
     await vscode.workspace.fs.createDirectory(includeDir);
-    const guard = sanitizeName(projectName).toUpperCase() + '_HPP';
+    const guard = sanitizeName(projectName).toUpperCase() + '_' + headerExt.toUpperCase();
     await writeText(
       header,
       `#ifndef ${guard}\n#define ${guard}\n\n// Public API for ${projectName}\n\n#endif // ${guard}\n`
@@ -239,8 +319,8 @@ async function scaffoldSrcAndInclude(folderUri, projectName) {
 async function convertToSingleProject(folderUri) {
   const cfg = vscode.workspace.getConfiguration('cmakeProjectWizard');
 
-  // GUARD FIRST: bail out before writing anything if subprojects exist.
-  if (await hasSubprojects(folderUri)) {
+  const kind = await classifyFolder(folderUri);
+  if (kind === 'subprojects') {
     vscode.window.showErrorMessage(
       'This folder already contains subprojects (add_subdirectory or nested ' +
       'CMakeLists.txt). It cannot be converted to a single project. ' +
@@ -263,9 +343,13 @@ async function convertToSingleProject(folderUri) {
     }
   }
 
-  await scaffoldSrcAndInclude(folderUri, projectName);
+  const lang = await pickLanguage();
+  if (!lang) {
+    return;
+  }
 
-  await writeText(rootCmake, buildRootCmakeLists(projectName, cfg));
+  await scaffoldSrcAndInclude(folderUri, projectName, lang);
+  await writeText(rootCmake, buildRootCmakeLists(projectName, lang, cfg));
 
   const presetsUri = vscode.Uri.joinPath(folderUri, 'CMakePresets.json');
   if (!(await fileExists(presetsUri))) {
@@ -273,43 +357,42 @@ async function convertToSingleProject(folderUri) {
   }
 
   vscode.window.showInformationMessage(
-    `Initialized "${projectName}" as a single CMake project.`
+    `Initialized "${projectName}" as a single ${lang === 'c' ? 'C' : 'C++'} project.`
   );
 
   try {
     await vscode.commands.executeCommand('cmake.configure');
   } catch {
-    // CMake Tools not ready; safe to ignore.
+    // ignore
   }
 }
 
 /* ------------------------------------------------------------------ */
-/* Subproject creation (restored full flow)                            */
+/* Subproject creation                                                 */
 /* ------------------------------------------------------------------ */
 
-function buildSubprojectCmakeLists(name, cfg) {
+function buildSubprojectCmakeLists(name, lang, cfg) {
   const cxx = cfg.get('cmake.cxxStandard', '20');
   const c = cfg.get('cmake.cStandard', '17');
+  const mainFile = lang === 'c' ? 'src/main.c' : 'src/main.cpp';
+
+  const props =
+    lang === 'c'
+      ? `  C_STANDARD ${c}\n  C_STANDARD_REQUIRED ON`
+      : `  C_STANDARD ${c}\n  C_STANDARD_REQUIRED ON\n  CXX_STANDARD ${cxx}\n  CXX_STANDARD_REQUIRED ON`;
 
   return `add_executable(${name}
-  src/main.cpp
+  ${mainFile}
 )
 
 set_target_properties(${name} PROPERTIES
-  C_STANDARD ${c}
-  C_STANDARD_REQUIRED ON
-  CXX_STANDARD ${cxx}
-  CXX_STANDARD_REQUIRED ON
+${props}
 )
 
 target_include_directories(${name} PRIVATE include)
 `;
 }
 
-/**
- * Append add_subdirectory(<name>) to the root CMakeLists.txt if not present.
- * Creates a minimal root if none exists.
- */
 async function wireAddSubdirectory(rootFolderUri, name, cfg) {
   const rootCmake = vscode.Uri.joinPath(rootFolderUri, 'CMakeLists.txt');
   const line = `add_subdirectory(${name})`;
@@ -346,6 +429,17 @@ ${line}
 async function createSubproject(parentFolderUri) {
   const cfg = vscode.workspace.getConfiguration('cmakeProjectWizard');
 
+  // GUARD: if the folder is already a single project, subprojects are not allowed.
+  const kind = await classifyFolder(parentFolderUri);
+  if (kind === 'single') {
+    vscode.window.showErrorMessage(
+      'This folder is already a single CMake project. ' +
+      'Subprojects cannot be added to a single-project folder. ' +
+      'Nothing was changed.'
+    );
+    return;
+  }
+
   const rawName = await vscode.window.showInputBox({
     prompt: 'Subproject name',
     validateInput: (v) =>
@@ -356,6 +450,11 @@ async function createSubproject(parentFolderUri) {
   }
   const name = sanitizeName(rawName.trim());
 
+  const lang = await pickLanguage();
+  if (!lang) {
+    return;
+  }
+
   const subFolder = vscode.Uri.joinPath(parentFolderUri, name);
   if (await fileExists(subFolder)) {
     vscode.window.showErrorMessage(
@@ -364,25 +463,24 @@ async function createSubproject(parentFolderUri) {
     return;
   }
 
-  // Scaffold subproject: CMakeLists.txt, src/main.cpp, include/<name>/
   await vscode.workspace.fs.createDirectory(subFolder);
   await writeText(
     vscode.Uri.joinPath(subFolder, 'CMakeLists.txt'),
-    buildSubprojectCmakeLists(name, cfg)
+    buildSubprojectCmakeLists(name, lang, cfg)
   );
-  await scaffoldSrcAndInclude(subFolder, name);
+  await scaffoldSrcAndInclude(subFolder, name, lang);
 
-  // Wire into the root CMakeLists.txt.
   await wireAddSubdirectory(parentFolderUri, name, cfg);
 
-  // Create root CMakePresets.json if missing.
   const presetsUri = vscode.Uri.joinPath(parentFolderUri, 'CMakePresets.json');
   if (!(await fileExists(presetsUri))) {
     const rootName = sanitizeName(path.basename(parentFolderUri.fsPath));
     await writeText(presetsUri, buildPresets(rootName, cfg));
   }
 
-  vscode.window.showInformationMessage(`Created subproject "${name}".`);
+  vscode.window.showInformationMessage(
+    `Created ${lang === 'c' ? 'C' : 'C++'} subproject "${name}".`
+  );
 
   try {
     await vscode.commands.executeCommand('cmake.configure');
@@ -394,25 +492,6 @@ async function createSubproject(parentFolderUri) {
 /* ------------------------------------------------------------------ */
 /* New File commands                                                   */
 /* ------------------------------------------------------------------ */
-
-async function promptFileName(defaultName) {
-  return vscode.window.showInputBox({
-    prompt: 'File name',
-    value: defaultName,
-    validateInput: (v) =>
-      v && v.trim().length ? null : 'Name cannot be empty'
-  });
-}
-
-function resolveTargetDir(resource) {
-  // If the right-clicked resource is a file, use its parent directory.
-  if (resource) {
-    return resource.with
-      ? vscode.Uri.joinPath(resource, '..') // placeholder; corrected below
-      : resource;
-  }
-  return undefined;
-}
 
 async function dirForResource(resource) {
   if (!resource) {
@@ -428,6 +507,19 @@ async function dirForResource(resource) {
   } catch {
     return resource;
   }
+}
+
+async function promptFileName(defaultName) {
+  return vscode.window.showInputBox({
+    prompt: 'File name',
+    value: defaultName,
+    validateInput: (v) =>
+      v && v.trim().length ? null : 'Name cannot be empty'
+  });
+}
+
+function headerGuard(fileName) {
+  return sanitizeName(fileName).toUpperCase().replace(/__+/g, '_');
 }
 
 async function createFileFromTemplate(resource, defaultName, content) {
@@ -450,30 +542,35 @@ async function createFileFromTemplate(resource, defaultName, content) {
   await vscode.window.showTextDocument(doc);
 }
 
-function headerGuard(fileName) {
-  return sanitizeName(fileName).toUpperCase().replace(/__+/g, '_');
-}
-
-async function newCSource(resource) {
-  await createFileFromTemplate(
-    resource,
-    'source.c',
-    () => `#include <stdio.h>\n\n`
-  );
-}
-
-async function newCppSource(resource) {
-  await createFileFromTemplate(
-    resource,
-    'source.cpp',
-    () => `#include <iostream>\n\n`
-  );
+async function newSource(resource) {
+  const lang = await pickLanguage();
+  if (!lang) {
+    return;
+  }
+  if (lang === 'c') {
+    await createFileFromTemplate(
+      resource,
+      'source.c',
+      () => `#include <stdio.h>\n\n`
+    );
+  } else {
+    await createFileFromTemplate(
+      resource,
+      'source.cpp',
+      () => `#include <iostream>\n\n`
+    );
+  }
 }
 
 async function newHeader(resource) {
+  const lang = await pickLanguage();
+  if (!lang) {
+    return;
+  }
+  const defaultName = lang === 'c' ? 'header.h' : 'header.hpp';
   await createFileFromTemplate(
     resource,
-    'header.hpp',
+    defaultName,
     (name) => {
       const guard = headerGuard(name) + '_';
       return `#ifndef ${guard}\n#define ${guard}\n\n\n\n#endif // ${guard}\n`;
@@ -482,7 +579,6 @@ async function newHeader(resource) {
 }
 
 async function newLibraryTarget(resource) {
-  // Scaffolds a library subfolder: CMakeLists.txt + src + include.
   const parent = await dirForResource(resource);
   if (!parent) {
     vscode.window.showErrorMessage('No folder selected.');
@@ -499,6 +595,11 @@ async function newLibraryTarget(resource) {
     return;
   }
   const name = sanitizeName(rawName.trim());
+
+  const lang = await pickLanguage();
+  if (!lang) {
+    return;
+  }
 
   const kind = await vscode.window.showQuickPick(
     ['STATIC', 'SHARED', 'INTERFACE'],
@@ -517,6 +618,15 @@ async function newLibraryTarget(resource) {
   await vscode.workspace.fs.createDirectory(libFolder);
 
   const cxx = cfg.get('cmake.cxxStandard', '20');
+  const c = cfg.get('cmake.cStandard', '17');
+  const srcExt = lang === 'c' ? 'c' : 'cpp';
+  const headerExt = lang === 'c' ? 'h' : 'hpp';
+
+  const stdProps =
+    lang === 'c'
+      ? `  C_STANDARD ${c}\n  C_STANDARD_REQUIRED ON`
+      : `  CXX_STANDARD ${cxx}\n  CXX_STANDARD_REQUIRED ON`;
+
   let cmakeBody;
   if (kind === 'INTERFACE') {
     cmakeBody =
@@ -526,12 +636,11 @@ target_include_directories(${name} INTERFACE include)
   } else {
     cmakeBody =
 `add_library(${name} ${kind}
-  src/${name}.cpp
+  src/${name}.${srcExt}
 )
 
 set_target_properties(${name} PROPERTIES
-  CXX_STANDARD ${cxx}
-  CXX_STANDARD_REQUIRED ON
+${stdProps}
 )
 
 target_include_directories(${name} PUBLIC include)
@@ -539,27 +648,27 @@ target_include_directories(${name} PUBLIC include)
   }
   await writeText(vscode.Uri.joinPath(libFolder, 'CMakeLists.txt'), cmakeBody);
 
-  // include header
   const incDir = vscode.Uri.joinPath(libFolder, 'include', name);
   await vscode.workspace.fs.createDirectory(incDir);
-  const guard = name.toUpperCase() + '_HPP';
+  const guard = name.toUpperCase() + '_' + headerExt.toUpperCase();
   await writeText(
-    vscode.Uri.joinPath(incDir, `${name}.hpp`),
+    vscode.Uri.joinPath(incDir, `${name}.${headerExt}`),
     `#ifndef ${guard}\n#define ${guard}\n\n#endif // ${guard}\n`
   );
 
-  // source (not for INTERFACE)
   if (kind !== 'INTERFACE') {
     const srcDir = vscode.Uri.joinPath(libFolder, 'src');
     await vscode.workspace.fs.createDirectory(srcDir);
     await writeText(
-      vscode.Uri.joinPath(srcDir, `${name}.cpp`),
-      `#include "${name}/${name}.hpp"\n`
+      vscode.Uri.joinPath(srcDir, `${name}.${srcExt}`),
+      `#include "${name}/${name}.${headerExt}"\n`
     );
   }
 
   await wireAddSubdirectory(parent, name, cfg);
-  vscode.window.showInformationMessage(`Created ${kind} library "${name}".`);
+  vscode.window.showInformationMessage(
+    `Created ${kind} ${lang === 'c' ? 'C' : 'C++'} library "${name}".`
+  );
 
   try {
     await vscode.commands.executeCommand('cmake.configure');
@@ -598,9 +707,7 @@ function activate(context) {
     vscode.commands.registerCommand(
       'cmakeProjectWizard.convertToSingleProject', withFolder(convertToSingleProject)),
     vscode.commands.registerCommand(
-      'cmakeProjectWizard.newCSource', newCSource),
-    vscode.commands.registerCommand(
-      'cmakeProjectWizard.newCppSource', newCppSource),
+      'cmakeProjectWizard.newSource', newSource),
     vscode.commands.registerCommand(
       'cmakeProjectWizard.newHeader', newHeader),
     vscode.commands.registerCommand(
