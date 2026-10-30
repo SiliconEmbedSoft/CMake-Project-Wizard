@@ -2,7 +2,7 @@
   "name": "cmake-project-wizard",
   "displayName": "CMake Project Wizard",
   "description": "Scaffold modular C/C++ CMake subprojects with a CLion-style workflow, clangd IntelliSense, and LLDB-DAP debugging.",
-  "version": "1.2.8",
+  "version": "1.2.9",
   "publisher": "siliconembedsoft-hq",
   "repository": {
     "type": "git",
@@ -11,7 +11,7 @@
   "icon": "icon.png",
   "author": {
     "name": "Nikhil Chaurasia",
-    "email": "<EMAIL_ADDRESS>"
+    "email": "nikhilchaurasia2020@outlook.com"
   },
   "license": "MIT",
   "engines": {
@@ -119,7 +119,7 @@
     },
     "configuration": [
       {
-        "title": "CMake Project Wizard: General",
+        "title": "General",
         "properties": {
           "cmakeProjectWizard.general.defaultLicense": {
             "type": "string",
@@ -136,7 +136,7 @@
         }
       },
       {
-        "title": "CMake Project Wizard: CMakeLists.txt Defaults",
+        "title": "CMakeLists.txt Defaults",
         "properties": {
           "cmakeProjectWizard.cmake.cxxStandard": {
             "type": "string",
@@ -168,7 +168,7 @@
         }
       },
       {
-        "title": "CMake Project Wizard: CMakePresets.json Defaults",
+        "title": "CMakePresets.json Defaults",
         "properties": {
           "cmakeProjectWizard.presets.generator": {
             "type": "string",
@@ -185,7 +185,7 @@
         }
       },
       {
-        "title": "CMake Project Wizard: Status Bar",
+        "title": "Status Bar",
         "properties": {
           "cmakeProjectWizard.statusBar.showTarget": {
             "type": "boolean",
