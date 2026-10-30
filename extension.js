@@ -2,7 +2,26 @@ const vscode = require('vscode');
 const path = require('path');
 
 /* ------------------------------------------------------------------ */
-/* Status bar items                                                    */
+/* Output Channel                                                     */
+/* ------------------------------------------------------------------ */
+
+let outputChannel;
+
+/**
+ * Log formatted messages to the dedicated extension output channel.
+ * @param {'INFO' | 'WARN' | 'ERROR' | 'DEBUG'} level 
+ * @param {string} message 
+ */
+function log(level, message) {
+  if (!outputChannel) {
+    outputChannel = vscode.window.createOutputChannel('CMake Project Wizard');
+  }
+  const timestamp = new Date().toLocaleTimeString('en-US', { hour12: false });
+  outputChannel.appendLine(`[${timestamp}] [${level}] ${message}`);
+}
+
+/* ------------------------------------------------------------------ */
+/* Status Bar Management                                              */
 /* ------------------------------------------------------------------ */
 
 let targetStatusItem;
@@ -50,7 +69,7 @@ function updateStatusBar() {
   if (targetStatusItem) {
     if (cfg.get('statusBar.showTarget', true) && activeTarget) {
       targetStatusItem.text = `$(target) ${activeTarget}`;
-      targetStatusItem.tooltip = 'CMake Project Wizard: active target';
+      targetStatusItem.tooltip = 'CMake Project Wizard: Active Target';
       targetStatusItem.show();
     } else {
       targetStatusItem.hide();
@@ -60,7 +79,7 @@ function updateStatusBar() {
   if (buildTypeStatusItem) {
     if (cfg.get('statusBar.showBuildType', true)) {
       buildTypeStatusItem.text = `$(gear) ${activeBuildType}`;
-      buildTypeStatusItem.tooltip = 'CMake Project Wizard: build type';
+      buildTypeStatusItem.tooltip = 'CMake Project Wizard: Build Type';
       buildTypeStatusItem.show();
     } else {
       buildTypeStatusItem.hide();
@@ -69,13 +88,12 @@ function updateStatusBar() {
 }
 
 /* ------------------------------------------------------------------ */
-/* Target discovery for the dropdown                                   */
+/* Target Discovery                                                   */
 /* ------------------------------------------------------------------ */
 
 /**
- * Collect candidate targets by scanning CMakeLists.txt files for
- * add_executable(<name> ...) and add_library(<name> ...).
- * Includes 'all' only when subprojects exist.
+ * Collect candidate targets by scanning CMakeLists.txt files.
+ * Includes 'all' only when subprojects exist in the workspace.
  */
 async function discoverTargets() {
   const rootUri = vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders[0].uri;
@@ -99,7 +117,7 @@ async function discoverTargets() {
         targets.add(m[1]);
       }
     } catch {
-      // ignore unreadable file
+      // Ignore unreadable files
     }
   }
 
@@ -113,6 +131,8 @@ async function discoverTargets() {
     if (!activeTarget || (!result.includes(activeTarget) && activeTarget !== 'all')) {
       activeTarget = 'all';
     }
+  } else {
+    activeTarget = result[0] || '';
   }
 
   return result;
@@ -122,7 +142,7 @@ async function selectActiveTarget() {
   const targets = await discoverTargets();
 
   if (targets.length === 0) {
-    vscode.window.showInformationMessage('No CMake targets found.');
+    vscode.window.showInformationMessage('No CMake targets found in workspace.');
     return;
   }
 
@@ -133,6 +153,7 @@ async function selectActiveTarget() {
 
   if (picked) {
     activeTarget = picked;
+    log('INFO', `Active target changed to "${activeTarget}"`);
     updateStatusBar();
   }
 }
@@ -144,12 +165,13 @@ async function selectBuildType() {
   );
   if (picked) {
     activeBuildType = picked;
+    log('INFO', `Active build type changed to "${activeBuildType}"`);
     updateStatusBar();
   }
 }
 
 /* ------------------------------------------------------------------ */
-/* Helpers                                                             */
+/* File System & Workspace Helpers                                    */
 /* ------------------------------------------------------------------ */
 
 async function fileExists(uri) {
@@ -177,8 +199,8 @@ function sanitizeName(name) {
 /**
  * Classify a folder:
  *   'subprojects' -> root uses add_subdirectory() or has nested CMakeLists.txt
- *   'single'      -> root CMakeLists.txt defines project()/targets but no subdirs
- *   'none'        -> no CMake structure yet
+ *   'single'      -> root CMakeLists.txt defines concrete targets or has local src/
+ *   'none'        -> empty folder, uninitialized, or root CMakeLists.txt acting as an empty container
  */
 async function classifyFolder(folderUri) {
   const rootCmake = vscode.Uri.joinPath(folderUri, 'CMakeLists.txt');
@@ -190,15 +212,16 @@ async function classifyFolder(folderUri) {
     rootText = null;
   }
 
+  // 1. Explicit add_subdirectory indicates subprojects
   if (rootText && /\badd_subdirectory\s*\(/.test(rootText)) {
     return 'subprojects';
   }
 
-  // Nested CMakeLists.txt in any immediate child folder => subprojects.
+  // 2. Nested CMakeLists.txt in immediate child directories indicates subprojects
   try {
     const entries = await vscode.workspace.fs.readDirectory(folderUri);
     for (const [name, type] of entries) {
-      if (type === vscode.FileType.Directory && name !== 'build') {
+      if (type === vscode.FileType.Directory && name !== 'build' && !name.startsWith('.')) {
         const childCmake = vscode.Uri.joinPath(folderUri, name, 'CMakeLists.txt');
         if (await fileExists(childCmake)) {
           return 'subprojects';
@@ -206,13 +229,15 @@ async function classifyFolder(folderUri) {
       }
     }
   } catch {
-    // ignore
+    // Ignore read errors
   }
 
+  // 3. Check if root is truly a single standalone project
   if (rootText) {
-    const isProject = /\bproject\s*\(/.test(rootText);
     const hasTarget = /\badd_(?:executable|library)\s*\(/.test(rootText);
-    if (isProject || hasTarget) {
+    const hasSrcDir = await fileExists(vscode.Uri.joinPath(folderUri, 'src'));
+
+    if (hasTarget || hasSrcDir) {
       return 'single';
     }
   }
@@ -222,9 +247,14 @@ async function classifyFolder(folderUri) {
 
 /**
  * Automatically cleans up stale add_subdirectory(...) entries in root CMakeLists.txt
- * if a subproject directory was removed.
+ * when subproject folders are deleted from disk.
  */
 async function cleanupDeletedSubdirectory(deletedUri) {
+  const cfg = vscode.workspace.getConfiguration('cmakeProjectWizard');
+  if (!cfg.get('autoCleanupOnDelete', true)) {
+    return;
+  }
+
   const workspaceFolder = vscode.workspace.getWorkspaceFolder(deletedUri);
   if (!workspaceFolder) {
     return;
@@ -238,11 +268,13 @@ async function cleanupDeletedSubdirectory(deletedUri) {
   const dirName = path.basename(deletedUri.fsPath);
   const content = await readText(rootCmakeUri);
 
+  // Match 'add_subdirectory(dirName)' or 'add_subdirectory(dirName ...)'
   const regex = new RegExp(`^[ \\t]*add_subdirectory\\s*\\(\\s*${dirName}\\b[^)]*\\)\\r?\\n?`, 'gm');
 
   if (regex.test(content)) {
     const updated = content.replace(regex, '');
     await writeText(rootCmakeUri, updated);
+    log('INFO', `Removed stale add_subdirectory(${dirName}) from root CMakeLists.txt`);
 
     await discoverTargets();
     updateStatusBar();
@@ -250,13 +282,13 @@ async function cleanupDeletedSubdirectory(deletedUri) {
     try {
       await vscode.commands.executeCommand('cmake.configure');
     } catch {
-      // ignore
+      // cmake-tools may not be active
     }
   }
 }
 
 /* ------------------------------------------------------------------ */
-/* Language selection                                                  */
+/* Language Selection Prompt                                          */
 /* ------------------------------------------------------------------ */
 
 async function pickLanguage() {
@@ -271,7 +303,7 @@ async function pickLanguage() {
 }
 
 /* ------------------------------------------------------------------ */
-/* Single-project conversion                                           */
+/* Templates & Scaffolding                                            */
 /* ------------------------------------------------------------------ */
 
 function buildRootCmakeLists(projectName, lang, cfg) {
@@ -330,8 +362,7 @@ function buildPresets(projectName, cfg) {
   ) + '\n';
 }
 
-const SAMPLE_MAIN_CPP =
-`#include <iostream>
+const SAMPLE_MAIN_CPP = `#include <iostream>
 
 int main() {
     std::cout << "Hello, CMake!" << std::endl;
@@ -339,8 +370,7 @@ int main() {
 }
 `;
 
-const SAMPLE_MAIN_C =
-`#include <stdio.h>
+const SAMPLE_MAIN_C = `#include <stdio.h>
 
 int main(void) {
     printf("Hello, CMake!\\n");
@@ -372,15 +402,18 @@ async function scaffoldSrcAndInclude(folderUri, projectName, lang) {
   }
 }
 
+/* ------------------------------------------------------------------ */
+/* Commands Implementation                                            */
+/* ------------------------------------------------------------------ */
+
 async function convertToSingleProject(folderUri) {
   const cfg = vscode.workspace.getConfiguration('cmakeProjectWizard');
 
   const kind = await classifyFolder(folderUri);
   if (kind === 'subprojects') {
     vscode.window.showErrorMessage(
-      'This folder already contains subprojects (add_subdirectory or nested ' +
-      'CMakeLists.txt). It cannot be converted to a single project. ' +
-      'Nothing was changed.'
+      'This folder contains active subprojects. ' +
+      'It cannot be converted to a single project until subprojects are removed.'
     );
     return;
   }
@@ -412,9 +445,8 @@ async function convertToSingleProject(folderUri) {
     await writeText(presetsUri, buildPresets(projectName, cfg));
   }
 
-  vscode.window.showInformationMessage(
-    `Initialized "${projectName}" as a single ${lang === 'c' ? 'C' : 'C++'} project.`
-  );
+  log('INFO', `Initialized "${projectName}" as a single ${lang === 'c' ? 'C' : 'C++'} project.`);
+  vscode.window.showInformationMessage(`Initialized "${projectName}" as a single ${lang === 'c' ? 'C' : 'C++'} project.`);
 
   await discoverTargets();
   updateStatusBar();
@@ -422,13 +454,9 @@ async function convertToSingleProject(folderUri) {
   try {
     await vscode.commands.executeCommand('cmake.configure');
   } catch {
-    // ignore
+    // Ignore
   }
 }
-
-/* ------------------------------------------------------------------ */
-/* Subproject creation                                                 */
-/* ------------------------------------------------------------------ */
 
 function buildSubprojectCmakeLists(name, lang, cfg) {
   const cxx = cfg.get('cmake.cxxStandard', '20');
@@ -459,9 +487,7 @@ async function wireAddSubdirectory(rootFolderUri, name, cfg) {
   if (await fileExists(rootCmake)) {
     const text = await readText(rootCmake);
     const stripped = text.replace(/#.*$/gm, '');
-    const already = new RegExp(
-      `\\badd_subdirectory\\s*\\(\\s*${name}\\s*\\)`
-    ).test(stripped);
+    const already = new RegExp(`\\badd_subdirectory\\s*\\(\\s*${name}\\s*\\)`).test(stripped);
     if (!already) {
       const newline = text.endsWith('\n') ? '' : '\n';
       await writeText(rootCmake, text + newline + line + '\n');
@@ -470,8 +496,7 @@ async function wireAddSubdirectory(rootFolderUri, name, cfg) {
     const minReq = cfg.get('cmake.minimumRequired', '3.21');
     const rootName = sanitizeName(path.basename(rootFolderUri.fsPath));
     const buildType = cfg.get('cmake.defaultBuildType', 'Debug');
-    const content =
-`cmake_minimum_required(VERSION ${minReq})
+    const content = `cmake_minimum_required(VERSION ${minReq})
 
 project(${rootName} LANGUAGES C CXX)
 
@@ -491,9 +516,8 @@ async function createSubproject(parentFolderUri) {
   const kind = await classifyFolder(parentFolderUri);
   if (kind === 'single') {
     vscode.window.showErrorMessage(
-      'This folder is already a single CMake project. ' +
-      'Subprojects cannot be added to a single-project folder. ' +
-      'Nothing was changed.'
+      'This folder is configured as a single standalone CMake project with its own targets. ' +
+      'Subprojects cannot be nested here.'
     );
     return;
   }
@@ -515,9 +539,7 @@ async function createSubproject(parentFolderUri) {
 
   const subFolder = vscode.Uri.joinPath(parentFolderUri, name);
   if (await fileExists(subFolder)) {
-    vscode.window.showErrorMessage(
-      `A folder named "${name}" already exists here.`
-    );
+    vscode.window.showErrorMessage(`A folder named "${name}" already exists here.`);
     return;
   }
 
@@ -536,9 +558,8 @@ async function createSubproject(parentFolderUri) {
     await writeText(presetsUri, buildPresets(rootName, cfg));
   }
 
-  vscode.window.showInformationMessage(
-    `Created ${lang === 'c' ? 'C' : 'C++'} subproject "${name}".`
-  );
+  log('INFO', `Created ${lang === 'c' ? 'C' : 'C++'} subproject "${name}".`);
+  vscode.window.showInformationMessage(`Created ${lang === 'c' ? 'C' : 'C++'} subproject "${name}".`);
 
   await discoverTargets();
   updateStatusBar();
@@ -546,13 +567,9 @@ async function createSubproject(parentFolderUri) {
   try {
     await vscode.commands.executeCommand('cmake.configure');
   } catch {
-    // ignore
+    // Ignore
   }
 }
-
-/* ------------------------------------------------------------------ */
-/* New File commands                                                   */
-/* ------------------------------------------------------------------ */
 
 async function dirForResource(resource) {
   if (!resource) {
@@ -601,6 +618,7 @@ async function createFileFromTemplate(resource, defaultName, content) {
   await writeText(fileUri, content(name.trim()));
   const doc = await vscode.workspace.openTextDocument(fileUri);
   await vscode.window.showTextDocument(doc);
+  log('INFO', `Created file: ${fileUri.fsPath}`);
 }
 
 async function newSource(resource) {
@@ -690,13 +708,9 @@ async function newLibraryTarget(resource) {
 
   let cmakeBody;
   if (kind === 'INTERFACE') {
-    cmakeBody =
-`add_library(${name} INTERFACE)
-target_include_directories(${name} INTERFACE include)
-`;
+    cmakeBody = `add_library(${name} INTERFACE)\ntarget_include_directories(${name} INTERFACE include)\n`;
   } else {
-    cmakeBody =
-`add_library(${name} ${kind}
+    cmakeBody = `add_library(${name} ${kind}
   src/${name}.${srcExt}
 )
 
@@ -727,9 +741,8 @@ target_include_directories(${name} PUBLIC include)
   }
 
   await wireAddSubdirectory(parent, name, cfg);
-  vscode.window.showInformationMessage(
-    `Created ${kind} ${lang === 'c' ? 'C' : 'C++'} library "${name}".`
-  );
+  log('INFO', `Created ${kind} ${lang === 'c' ? 'C' : 'C++'} library "${name}".`);
+  vscode.window.showInformationMessage(`Created ${kind} ${lang === 'c' ? 'C' : 'C++'} library "${name}".`);
 
   await discoverTargets();
   updateStatusBar();
@@ -737,21 +750,20 @@ target_include_directories(${name} PUBLIC include)
   try {
     await vscode.commands.executeCommand('cmake.configure');
   } catch {
-    // ignore
+    // Ignore
   }
 }
 
 /* ------------------------------------------------------------------ */
-/* Activation                                                          */
+/* Extension Lifecycle                                                */
 /* ------------------------------------------------------------------ */
 
 function withFolder(handler) {
   return async (resource) => {
     const folderUri = resource
-      || (vscode.workspace.workspaceFolders &&
-          vscode.workspace.workspaceFolders[0].uri);
+      || (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders[0].uri);
     if (!folderUri) {
-      vscode.window.showErrorMessage('No folder selected.');
+      vscode.window.showErrorMessage('No workspace folder selected.');
       return;
     }
     await handler(folderUri);
@@ -759,9 +771,11 @@ function withFolder(handler) {
 }
 
 function activate(context) {
+  log('INFO', 'CMake Project Wizard extension activating...');
+
   createStatusBarItems(context);
 
-  // Auto-remove add_subdirectory when subproject folders are deleted
+  // Monitor workspace deletions to auto-strip add_subdirectory(...)
   const fileWatcher = vscode.workspace.createFileSystemWatcher('**/*');
   fileWatcher.onDidDelete((uri) => {
     cleanupDeletedSubdirectory(uri);
@@ -792,8 +806,14 @@ function activate(context) {
       }
     })
   );
+
+  log('INFO', 'CMake Project Wizard activated successfully.');
 }
 
-function deactivate() {}
+function deactivate() {
+  if (outputChannel) {
+    outputChannel.dispose();
+  }
+}
 
 module.exports = { activate, deactivate };
