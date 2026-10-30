@@ -2,7 +2,7 @@
   "name": "cmake-project-wizard",
   "displayName": "CMake Project Wizard",
   "description": "Scaffold modular C/C++ CMake subprojects with a CLion-style workflow, clangd IntelliSense, and LLDB-DAP debugging.",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "publisher": "siliconembedsoft-hq",
   "repository": {
     "type": "git",
@@ -60,6 +60,21 @@
         "category": "CMake Project Wizard"
       },
       {
+        "command": "cmakeProjectWizard.newCppClass",
+        "title": "New C++ Class...",
+        "category": "CMake Project Wizard"
+      },
+      {
+        "command": "cmakeProjectWizard.newSourceFile",
+        "title": "New C/C++ Source File...",
+        "category": "CMake Project Wizard"
+      },
+      {
+        "command": "cmakeProjectWizard.newHeaderFile",
+        "title": "New C/C++ Header File...",
+        "category": "CMake Project Wizard"
+      },
+      {
         "command": "cmakeProjectWizard.configure",
         "title": "Configure CMake Project",
         "category": "CMake Project Wizard"
@@ -100,7 +115,22 @@
         {
           "command": "cmakeProjectWizard.newSubproject",
           "when": "explorerResourceIsFolder",
-          "group": "navigation@100"
+          "group": "cmake_wizard_group@1"
+        },
+        {
+          "command": "cmakeProjectWizard.newCppClass",
+          "when": "explorerResourceIsFolder",
+          "group": "cmake_wizard_group@2"
+        },
+        {
+          "command": "cmakeProjectWizard.newSourceFile",
+          "when": "explorerResourceIsFolder",
+          "group": "cmake_wizard_group@3"
+        },
+        {
+          "command": "cmakeProjectWizard.newHeaderFile",
+          "when": "explorerResourceIsFolder",
+          "group": "cmake_wizard_group@4"
         }
       ],
       "commandPalette": [
@@ -114,6 +144,18 @@
         },
         {
           "command": "cmakeProjectWizard.debugTarget",
+          "when": "workspaceFolderCount != 0"
+        },
+        {
+          "command": "cmakeProjectWizard.newCppClass",
+          "when": "workspaceFolderCount != 0"
+        },
+        {
+          "command": "cmakeProjectWizard.newSourceFile",
+          "when": "workspaceFolderCount != 0"
+        },
+        {
+          "command": "cmakeProjectWizard.newHeaderFile",
           "when": "workspaceFolderCount != 0"
         }
       ]
@@ -142,7 +184,7 @@
         "cmakeProjectWizard.autoCleanupOnDelete": {
           "type": "boolean",
           "default": true,
-          "description": "Automatically strip add_subdirectory() and launch.json entries when a subproject folder is deleted."
+          "description": "Automatically strip add_subdirectory(), clean stale build targets, and clean launch.json entries when a subproject folder is deleted."
         },
         "cmakeProjectWizard.autoReconfigureAfterScaffold": {
           "type": "boolean",
