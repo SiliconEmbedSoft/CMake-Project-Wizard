@@ -94,13 +94,35 @@ async function ensureProjectReady(root) {
   return true;
 }
 
-async function triggerReconfigure() {
+// Debounce configure executions to prevent build-system race conditions
+let reconfigureTimer = null;
+function debouncedReconfigure() {
   if (!getConfig().get('autoReconfigureAfterScaffold', true)) return;
-  try {
-    await vscode.commands.executeCommand('cmake.configure');
-  } catch {
-    // Ignore if cmake-tools is not ready
+  if (reconfigureTimer) {
+    clearTimeout(reconfigureTimer);
   }
+  reconfigureTimer = setTimeout(async () => {
+    try {
+      await vscode.commands.executeCommand('cmake.configure');
+    } catch {
+      // Safe no-op if cmake-tools is busy
+    }
+  }, 350);
+}
+
+function isInternalOrBuildPath(filePath, root) {
+  if (!root || !filePath) return true;
+  const rel = path.relative(root, filePath);
+  if (rel.startsWith('..') || path.isAbsolute(rel)) return false;
+  const parts = rel.split(path.sep);
+  const first = parts[0];
+  return (
+    first === 'build' ||
+    first === '.git' ||
+    first === '.vscode' ||
+    first === '.cache' ||
+    first.startsWith('cmake-build-')
+  );
 }
 
 /* ============================================================
@@ -124,7 +146,6 @@ function resolveSubprojectContext(uri) {
     current = path.dirname(current);
   }
 
-  // Fallback to active target directory if inside workspace root
   const active = targetStatusItem ? targetStatusItem.text.replace('$(target) ', '').trim() : null;
   if (active && active !== '(no target)' && root) {
     const candidate = path.join(root, active);
@@ -367,7 +388,7 @@ function cleanupLaunchConfiguration(rootFolder, folderName) {
       }
     }
   } catch {
-    // Ignore parse errors
+    // Ignore JSON syntax errors
   }
 }
 
@@ -541,7 +562,7 @@ async function cmdSelectActiveTarget(context) {
   try {
     await vscode.commands.executeCommand('cmake.setDefaultTarget', pick);
   } catch {
-    // Ignore if command is absent
+    // Ignore if command not supported
   }
   updateStatusBar(context);
 }
@@ -557,7 +578,7 @@ async function cmdSelectBuildType(context) {
   try {
     await vscode.commands.executeCommand('cmake.setBuildType', pick);
   } catch {
-    // Ignore cross-version differences
+    // Ignore cross-version variation
   }
   updateStatusBar(context);
 }
@@ -764,7 +785,7 @@ async function cmdNewSubproject(context, uri) {
     const textDoc = await vscode.workspace.openTextDocument(sourcePath);
     await vscode.window.showTextDocument(textDoc, { preview: false });
 
-    await triggerReconfigure();
+    debouncedReconfigure();
 
     vscode.window.showInformationMessage(
       `CMake Project Wizard: ${projectType} "${trimmedName}" created and set as active target.`
@@ -899,20 +920,31 @@ function activate(context) {
   context.subscriptions.push(targetStatusItem, buildTypeStatusItem);
   updateStatusBar(context);
 
+  // Watch only source directories, ignoring build artifacts and hidden dot-folders
   const fileWatcher = vscode.workspace.createFileSystemWatcher('**/*', false, false, false);
 
   fileWatcher.onDidDelete(async (uri) => {
     if (!getConfig().get('autoCleanupOnDelete', true)) return;
 
     const deletedPath = uri.fsPath;
+    const root = primaryWorkspaceRoot();
+
+    // Prevent loop: ignore deletions occurring inside build/ or dot-folders
+    if (isInternalOrBuildPath(deletedPath, root)) return;
+
     const parentDir = path.dirname(deletedPath);
     const folderName = path.basename(deletedPath);
 
-    // 1. Clean root CMakeLists.txt and launch.json configurations
+    // Only proceed if this directory was registered in parent CMakeLists.txt
+    const parentCMake = path.join(parentDir, 'CMakeLists.txt');
+    if (!fs.existsSync(parentCMake)) return;
+    const parentContent = fs.readFileSync(parentCMake, 'utf8');
+    const targetRegex = new RegExp(`add_subdirectory\\(\\s*["']?${folderName}["']?\\s*\\)`, 'i');
+    if (!targetRegex.test(parentContent)) return;
+
     cleanupParentCMakeLists(parentDir, folderName);
     cleanupLaunchConfiguration(parentDir, folderName);
 
-    // 2. Clear state if the active subproject was deleted
     const active = context.workspaceState.get('cmakeProjectWizard.activeTarget', null);
     if (active === folderName) {
       const remainingTargets = discoverTargets(parentDir);
@@ -925,28 +957,21 @@ function activate(context) {
           await vscode.commands.executeCommand('cmake.setDefaultTarget', nextTarget);
         }
       } catch {
-        // Ignore if cmake-tools is idle
-      }
-    }
-
-    // 3. Clean and reconfigure so Ninja removes orphaned targets from build.ninja
-    try {
-      await vscode.commands.executeCommand('cmake.cleanReconfigure');
-    } catch {
-      try {
-        await vscode.commands.executeCommand('cmake.configure');
-      } catch {
-        // Ignore fallback
+        // Ignore if cmake-tools is busy
       }
     }
 
     updateStatusBar(context);
+    debouncedReconfigure();
   });
 
   fileWatcher.onDidCreate((uri) => {
+    const root = primaryWorkspaceRoot();
+    if (isInternalOrBuildPath(uri.fsPath, root)) return;
+
     if (path.basename(uri.fsPath) === 'CMakeLists.txt') {
       updateStatusBar(context);
-      triggerReconfigure();
+      debouncedReconfigure();
     }
   });
 
@@ -985,7 +1010,11 @@ function activate(context) {
   );
 }
 
-function deactivate() {}
+function deactivate() {
+  if (reconfigureTimer) {
+    clearTimeout(reconfigureTimer);
+  }
+}
 
 module.exports = {
   activate,
