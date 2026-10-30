@@ -2,7 +2,7 @@
   "name": "cmake-project-wizard",
   "displayName": "CMake Project Wizard",
   "description": "Scaffold modular C/C++ CMake subprojects with a CLion-style workflow, clangd IntelliSense, and LLDB-DAP debugging.",
-  "version": "1.2.5",
+  "version": "1.2.6",
   "publisher": "siliconembedsoft-hq",
   "repository": {
     "type": "git",
@@ -30,68 +30,27 @@
     "c",
     "clangd",
     "lldb",
-    "lldb-dap",
+    "scaffold",
     "subproject",
-    "multi-target"
+    "workspace",
+    "boilerplate",
+    "generator",
+    "template"
   ],
-  "main": "./extension.js",
   "activationEvents": [
     "onStartupFinished"
   ],
-  "extensionPack": [
-    "llvm-vs-code-extensions.vscode-clangd",
-    "llvm-vs-code-extensions.lldb-dap",
-    "ms-vscode.cmake-tools",
-    "ms-vscode.cpp-devtools",
-    "ms-vscode.cpptools-themes"
-  ],
-  "extensionDependencies": [
-    "llvm-vs-code-extensions.vscode-clangd",
-    "llvm-vs-code-extensions.lldb-dap",
-    "ms-vscode.cmake-tools",
-    "ms-vscode.cpp-devtools",
-    "ms-vscode.cpptools-themes"
-  ],
+  "main": "./extension.js",
   "contributes": {
     "commands": [
       {
-        "command": "cmakeProjectWizard.newSubproject",
-        "title": "New CMake Subproject...",
+        "command": "cmakeProjectWizard.createSubproject",
+        "title": "Add CMake Subproject",
         "category": "CMake Project Wizard"
       },
       {
-        "command": "cmakeProjectWizard.newCppClass",
-        "title": "New C++ Class...",
-        "category": "CMake Project Wizard"
-      },
-      {
-        "command": "cmakeProjectWizard.newSourceFile",
-        "title": "New C/C++ Source File...",
-        "category": "CMake Project Wizard"
-      },
-      {
-        "command": "cmakeProjectWizard.newHeaderFile",
-        "title": "New C/C++ Header File...",
-        "category": "CMake Project Wizard"
-      },
-      {
-        "command": "cmakeProjectWizard.configure",
-        "title": "Configure CMake Project",
-        "category": "CMake Project Wizard"
-      },
-      {
-        "command": "cmakeProjectWizard.buildTarget",
-        "title": "Build Active Target",
-        "category": "CMake Project Wizard"
-      },
-      {
-        "command": "cmakeProjectWizard.runTarget",
-        "title": "Run Active Target",
-        "category": "CMake Project Wizard"
-      },
-      {
-        "command": "cmakeProjectWizard.debugTarget",
-        "title": "Debug Active Target",
+        "command": "cmakeProjectWizard.convertToSingleProject",
+        "title": "Convert to Single CMake Project",
         "category": "CMake Project Wizard"
       },
       {
@@ -103,95 +62,106 @@
         "command": "cmakeProjectWizard.selectBuildType",
         "title": "Select Build Type",
         "category": "CMake Project Wizard"
-      },
-      {
-        "command": "cmakeProjectWizard.syncWorkspace",
-        "title": "Sync Workspace Configuration",
-        "category": "CMake Project Wizard"
       }
     ],
     "menus": {
       "explorer/context": [
         {
-          "command": "cmakeProjectWizard.newSubproject",
+          "command": "cmakeProjectWizard.createSubproject",
           "when": "explorerResourceIsFolder",
-          "group": "cmake_wizard_group@1"
+          "group": "cmakeProjectWizard@1"
         },
         {
-          "command": "cmakeProjectWizard.newCppClass",
+          "command": "cmakeProjectWizard.convertToSingleProject",
           "when": "explorerResourceIsFolder",
-          "group": "cmake_wizard_group@2"
-        },
-        {
-          "command": "cmakeProjectWizard.newSourceFile",
-          "when": "explorerResourceIsFolder",
-          "group": "cmake_wizard_group@3"
-        },
-        {
-          "command": "cmakeProjectWizard.newHeaderFile",
-          "when": "explorerResourceIsFolder",
-          "group": "cmake_wizard_group@4"
-        }
-      ],
-      "commandPalette": [
-        {
-          "command": "cmakeProjectWizard.buildTarget",
-          "when": "workspaceFolderCount != 0"
-        },
-        {
-          "command": "cmakeProjectWizard.runTarget",
-          "when": "workspaceFolderCount != 0"
-        },
-        {
-          "command": "cmakeProjectWizard.debugTarget",
-          "when": "workspaceFolderCount != 0"
-        },
-        {
-          "command": "cmakeProjectWizard.newCppClass",
-          "when": "workspaceFolderCount != 0"
-        },
-        {
-          "command": "cmakeProjectWizard.newSourceFile",
-          "when": "workspaceFolderCount != 0"
-        },
-        {
-          "command": "cmakeProjectWizard.newHeaderFile",
-          "when": "workspaceFolderCount != 0"
+          "group": "cmakeProjectWizard@2"
         }
       ]
     },
-    "configuration": {
-      "title": "CMake Project Wizard",
-      "properties": {
-        "cmakeProjectWizard.defaultCppStandard": {
-          "type": "string",
-          "default": "20",
-          "enum": ["14", "17", "20", "23"],
-          "description": "Default C++ standard offered first in the scaffolding wizard."
-        },
-        "cmakeProjectWizard.defaultCStandard": {
-          "type": "string",
-          "default": "17",
-          "enum": ["99", "11", "17", "23"],
-          "description": "Default C standard offered first in the scaffolding wizard."
-        },
-        "cmakeProjectWizard.defaultBuildType": {
-          "type": "string",
-          "default": "Debug",
-          "enum": ["Debug", "Release", "RelWithDebInfo", "MinSizeRel"],
-          "description": "Default CMake build type (CLion-style configuration)."
-        },
-        "cmakeProjectWizard.autoCleanupOnDelete": {
-          "type": "boolean",
-          "default": true,
-          "description": "Automatically strip add_subdirectory(), clean stale build targets, and clean launch.json entries when a subproject folder is deleted."
-        },
-        "cmakeProjectWizard.autoReconfigureAfterScaffold": {
-          "type": "boolean",
-          "default": true,
-          "description": "Automatically run CMake configure after creating a new project/subproject so targets appear without reloading the window."
+    "configuration": [
+      {
+        "title": "CMake Project Wizard: General",
+        "properties": {
+          "cmakeProjectWizard.general.defaultLicense": {
+            "type": "string",
+            "default": "MIT",
+            "description": "Default license for new projects."
+          },
+          "cmakeProjectWizard.general.commitLockfiles": {
+            "type": "boolean",
+            "default": false,
+            "description": "Whether to include lockfiles in generated .gitignore."
+          }
+        }
+      },
+      {
+        "title": "CMake Project Wizard: CMakeLists.txt Defaults",
+        "properties": {
+          "cmakeProjectWizard.cmake.cxxStandard": {
+            "type": "string",
+            "default": "20",
+            "enum": ["11", "14", "17", "20", "23"],
+            "description": "Default C++ standard for new projects."
+          },
+          "cmakeProjectWizard.cmake.cStandard": {
+            "type": "string",
+            "default": "17",
+            "enum": ["99", "11", "17", "23"],
+            "description": "Default C standard for new projects."
+          },
+          "cmakeProjectWizard.cmake.minimumRequired": {
+            "type": "string",
+            "default": "3.21",
+            "description": "cmake_minimum_required version for new projects."
+          },
+          "cmakeProjectWizard.cmake.defaultBuildType": {
+            "type": "string",
+            "default": "Debug",
+            "enum": ["Debug", "Release", "RelWithDebInfo", "MinSizeRel"],
+            "description": "Default build type for new projects."
+          }
+        }
+      },
+      {
+        "title": "CMake Project Wizard: CMakePresets.json Defaults",
+        "properties": {
+          "cmakeProjectWizard.presets.generator": {
+            "type": "string",
+            "default": "Ninja",
+            "description": "Default generator for new projects."
+          },
+          "cmakeProjectWizard.presets.binaryDir": {
+            "type": "string",
+            "default": "${sourceDir}/build",
+            "description": "Default binary directory for configure presets."
+          }
+        }
+      },
+      {
+        "title": "CMake Project Wizard: Status Bar",
+        "properties": {
+          "cmakeProjectWizard.statusBar.showTarget": {
+            "type": "boolean",
+            "default": true,
+            "description": "Show the active target in the status bar."
+          },
+          "cmakeProjectWizard.statusBar.showBuildType": {
+            "type": "boolean",
+            "default": true,
+            "description": "Show the build type in the status bar."
+          },
+          "cmakeProjectWizard.statusBar.targetPriority": {
+            "type": "number",
+            "default": 50,
+            "description": "Status bar priority for the target item (higher = further left)."
+          },
+          "cmakeProjectWizard.statusBar.buildTypePriority": {
+            "type": "number",
+            "default": 49,
+            "description": "Status bar priority for the build type item."
+          }
         }
       }
-    }
+    ]
   }
 }
