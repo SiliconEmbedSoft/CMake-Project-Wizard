@@ -2,7 +2,7 @@
 
 Scaffold modular C/C++ CMake subprojects with a CLion-style workflow — multi-target management, `clangd` IntelliSense, and modern LLVM native debugging via `lldb-dap` — directly inside Visual Studio Code.
 
-[![Version](https://img.shields.io/badge/version-1.2.4-blue.svg)](https://github.com/SiliconEmbedSoft/CMake-Project-Wizard)
+[![Version](https://img.shields.io/badge/version-1.2.5-blue.svg)](https://github.com/SiliconEmbedSoft/CMake-Project-Wizard)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![VS Code](https://img.shields.io/badge/VS%20Code-%5E1.75.0-007ACC.svg)](https://code.visualstudio.com/)
 
