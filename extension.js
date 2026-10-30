@@ -28,6 +28,22 @@ function hasValidRootProject(root) {
   return fs.existsSync(path.join(root, 'CMakeLists.txt'));
 }
 
+function isInternalOrBuildPath(filePath, root) {
+  if (!root || !filePath) return true;
+  const rel = path.relative(root, filePath);
+  if (rel.startsWith('..') || path.isAbsolute(rel)) return false;
+  const parts = rel.split(path.sep);
+  const first = parts[0];
+  return (
+    first === 'build' ||
+    first === 'bin' ||
+    first === '.git' ||
+    first === '.vscode' ||
+    first === '.cache' ||
+    first.startsWith('cmake-build-')
+  );
+}
+
 function buildCacheIsStale(root) {
   const cachePath = path.join(root, 'build', 'CMakeCache.txt');
   if (!fs.existsSync(cachePath)) return false;
@@ -106,26 +122,11 @@ function debouncedReconfigure() {
     } catch {
       // Safe no-op
     }
-  }, 350);
-}
-
-function isInternalOrBuildPath(filePath, root) {
-  if (!root || !filePath) return true;
-  const rel = path.relative(root, filePath);
-  if (rel.startsWith('..') || path.isAbsolute(rel)) return false;
-  const parts = rel.split(path.sep);
-  const first = parts[0];
-  return (
-    first === 'build' ||
-    first === '.git' ||
-    first === '.vscode' ||
-    first === '.cache' ||
-    first.startsWith('cmake-build-')
-  );
+  }, 300);
 }
 
 /* ============================================================
- * CLion-Style Subproject Scaffolding & Hierarchy Helpers
+ * Subproject Scaffolding & Hierarchy Helpers
  * ============================================================ */
 
 function resolveSubprojectContext(uri) {
@@ -322,6 +323,43 @@ function cleanupParentCMakeLists(parentDir, folderName) {
   }
 }
 
+// Keep root CMakeLists.txt 100% in sync with actual subdirectories on disk
+function syncRootCMakeListsWithDisk(rootFolder, targets) {
+  const rootCMake = path.join(rootFolder, 'CMakeLists.txt');
+  if (!fs.existsSync(rootCMake)) return;
+
+  try {
+    let content = fs.readFileSync(rootCMake, 'utf8');
+    let changed = false;
+
+    // 1. Remove subdirectories not present on disk
+    const subdirRegex = /[ \t]*add_subdirectory\(\s*["']?([a-zA-Z0-9_\-/]+)["']?\s*\)[ \t]*\r?\n?/g;
+    content = content.replace(subdirRegex, (match, folderName) => {
+      if (!targets.includes(folderName)) {
+        changed = true;
+        return '';
+      }
+      return match;
+    });
+
+    // 2. Add subdirectories found on disk that are missing
+    for (const t of targets) {
+      const checkRegex = new RegExp(`add_subdirectory\\(\\s*["']?${t}["']?\\s*\\)`, 'i');
+      if (!checkRegex.test(content)) {
+        const trailingNewline = content.endsWith('\n') ? '' : '\n';
+        content += `${trailingNewline}add_subdirectory(${t})\n`;
+        changed = true;
+      }
+    }
+
+    if (changed) {
+      fs.writeFileSync(rootCMake, content, 'utf8');
+    }
+  } catch (err) {
+    console.error(`[CMake Project Wizard] Sync root CMakeLists error: ${err.message}`);
+  }
+}
+
 function registerLaunchConfiguration(rootFolder, projectName) {
   const vscodeDir = path.join(rootFolder, '.vscode');
   const launchPath = path.join(vscodeDir, 'launch.json');
@@ -471,7 +509,7 @@ function ensureWorkspaceSettings(rootFolder) {
     modified = true;
   }
 
-  // Instruct CMake Tools to use lldb-dap instead of missing cppdbg
+  // Configure CMake Tools to use lldb-dap instead of missing cppdbg
   if (!settings['cmake.debugConfig'] || settings['cmake.debugConfig'].type !== 'lldb-dap') {
     settings['cmake.debugConfig'] = {
       type: 'lldb-dap',
@@ -487,30 +525,30 @@ function ensureWorkspaceSettings(rootFolder) {
 }
 
 /* ============================================================
- * Target Discovery & Status Bar
+ * Target Discovery (Filesystem-driven)
  * ============================================================ */
 
 function discoverTargets(rootFolder) {
-  const rootCMake = path.join(rootFolder, 'CMakeLists.txt');
+  if (!rootFolder || !fs.existsSync(rootFolder)) return [];
+  const ignored = new Set(['build', 'bin', '.git', '.vscode', '.cache']);
   const targets = [];
-  if (!fs.existsSync(rootCMake)) return targets;
 
-  let rootContent = '';
   try {
-    rootContent = fs.readFileSync(rootCMake, 'utf8');
-  } catch {
-    return targets;
-  }
-
-  const subdirRegex = /add_subdirectory\(\s*["']?([a-zA-Z0-9_\-/]+)["']?\s*\)/g;
-  let match;
-  while ((match = subdirRegex.exec(rootContent)) !== null) {
-    const name = match[1];
-    const subCMake = path.join(rootFolder, name, 'CMakeLists.txt');
-    // Ensure the folder and its CMakeLists.txt physically exist
-    if (fs.existsSync(subCMake)) {
-      targets.push(name);
+    const entries = fs.readdirSync(rootFolder, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        const dirName = entry.name;
+        if (ignored.has(dirName) || dirName.startsWith('cmake-build-') || dirName.startsWith('.')) {
+          continue;
+        }
+        const subCMake = path.join(rootFolder, dirName, 'CMakeLists.txt');
+        if (fs.existsSync(subCMake)) {
+          targets.push(dirName);
+        }
+      }
     }
+  } catch {
+    return [];
   }
   return targets;
 }
@@ -549,7 +587,7 @@ function updateStatusBar(context) {
 }
 
 /* ============================================================
- * Self-Healing Active Target Synchronization
+ * Target Synchronization & Auto-Recovery
  * ============================================================ */
 
 async function applyActiveTarget(context, target) {
@@ -586,7 +624,7 @@ async function applyActiveTarget(context, target) {
   updateStatusBar(context);
 }
 
-// Validates the active target against the filesystem and auto-repairs dead targets
+// Scans physical folders, repairs root CMakeLists.txt, and auto-selects valid target
 async function syncAndValidateTarget(context) {
   const root = primaryWorkspaceRoot();
   if (!root || !hasValidRootProject(root)) {
@@ -595,26 +633,18 @@ async function syncAndValidateTarget(context) {
   }
 
   const validTargets = discoverTargets(root);
+  syncRootCMakeListsWithDisk(root, validTargets);
+
   let currentTarget = context.workspaceState.get('cmakeProjectWizard.activeTarget', null);
 
-  // If the target no longer exists on disk
-  if (currentTarget && !validTargets.includes(currentTarget)) {
-    cleanupParentCMakeLists(root, currentTarget);
-    cleanupLaunchConfiguration(root, currentTarget);
-
-    const fallback = validTargets.length > 0 ? validTargets[0] : null;
-    await applyActiveTarget(context, fallback);
+  if (!currentTarget || !validTargets.includes(currentTarget)) {
+    currentTarget = validTargets.length > 0 ? validTargets[0] : null;
+    await applyActiveTarget(context, currentTarget);
     debouncedReconfigure();
-    return fallback;
+    return currentTarget;
   }
 
-  // If no target is set but targets exist, pick the first one
-  if (!currentTarget && validTargets.length > 0) {
-    await applyActiveTarget(context, validTargets[0]);
-    return validTargets[0];
-  }
-
-  updateStatusBar(context);
+  await applyActiveTarget(context, currentTarget);
   return currentTarget;
 }
 
@@ -983,7 +1013,6 @@ function activate(context) {
     });
   }
 
-  // Status Bar Items
   targetStatusItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 102);
   targetStatusItem.command = 'cmakeProjectWizard.selectActiveTarget';
 
@@ -995,7 +1024,7 @@ function activate(context) {
   // Self-heal on activation: check if the previously saved target was deleted
   syncAndValidateTarget(context);
 
-  // Self-heal when VS Code window gains focus
+  // Re-check target and disk sync when window regains focus
   context.subscriptions.push(
     vscode.window.onDidChangeWindowState((e) => {
       if (e.focused) {
@@ -1004,7 +1033,7 @@ function activate(context) {
     })
   );
 
-  // Native VS Code file/folder deletion watcher
+  // VS Code Explorer file/folder deletion listener
   context.subscriptions.push(
     vscode.workspace.onDidDeleteFiles(async (event) => {
       if (!getConfig().get('autoCleanupOnDelete', true)) return;
@@ -1024,7 +1053,7 @@ function activate(context) {
     })
   );
 
-  // General filesystem watcher for creations
+  // Filesystem watcher for external/terminal removals
   const fileWatcher = vscode.workspace.createFileSystemWatcher('**/*', false, false, false);
 
   fileWatcher.onDidDelete(async (uri) => {
