@@ -2,7 +2,7 @@
   "name": "cmake-project-wizard",
   "displayName": "CMake Project Wizard",
   "description": "Scaffold modular C/C++ CMake subprojects with a CLion-style workflow, clangd IntelliSense, and LLDB-DAP debugging.",
-  "version": "1.2.6",
+  "version": "1.2.7",
   "publisher": "siliconembedsoft-hq",
   "repository": {
     "type": "git",
@@ -54,6 +54,26 @@
         "category": "CMake Project Wizard"
       },
       {
+        "command": "cmakeProjectWizard.newCSource",
+        "title": "C Source File (.c)",
+        "category": "CMake Project Wizard"
+      },
+      {
+        "command": "cmakeProjectWizard.newCppSource",
+        "title": "C++ Source File (.cpp)",
+        "category": "CMake Project Wizard"
+      },
+      {
+        "command": "cmakeProjectWizard.newHeader",
+        "title": "Header File (.h/.hpp)",
+        "category": "CMake Project Wizard"
+      },
+      {
+        "command": "cmakeProjectWizard.newLibraryTarget",
+        "title": "Library Target (CMake)",
+        "category": "CMake Project Wizard"
+      },
+      {
         "command": "cmakeProjectWizard.selectActiveTarget",
         "title": "Select Active Target",
         "category": "CMake Project Wizard"
@@ -62,6 +82,12 @@
         "command": "cmakeProjectWizard.selectBuildType",
         "title": "Select Build Type",
         "category": "CMake Project Wizard"
+      }
+    ],
+    "submenus": [
+      {
+        "id": "cmakeProjectWizard.newFile",
+        "label": "CMake Wizard: New"
       }
     ],
     "menus": {
@@ -75,6 +101,28 @@
           "command": "cmakeProjectWizard.convertToSingleProject",
           "when": "explorerResourceIsFolder",
           "group": "cmakeProjectWizard@2"
+        },
+        {
+          "submenu": "cmakeProjectWizard.newFile",
+          "group": "cmakeProjectWizard@3"
+        }
+      ],
+      "cmakeProjectWizard.newFile": [
+        {
+          "command": "cmakeProjectWizard.newCSource",
+          "group": "1_source@1"
+        },
+        {
+          "command": "cmakeProjectWizard.newCppSource",
+          "group": "1_source@2"
+        },
+        {
+          "command": "cmakeProjectWizard.newHeader",
+          "group": "1_source@3"
+        },
+        {
+          "command": "cmakeProjectWizard.newLibraryTarget",
+          "group": "2_target@1"
         }
       ]
     },
@@ -152,12 +200,12 @@
           },
           "cmakeProjectWizard.statusBar.targetPriority": {
             "type": "number",
-            "default": 50,
-            "description": "Status bar priority for the target item (higher = further left)."
+            "default": 10,
+            "description": "Status bar priority for the target item (higher = further left). Start low so it sits right of clangd/debug."
           },
           "cmakeProjectWizard.statusBar.buildTypePriority": {
             "type": "number",
-            "default": 49,
+            "default": 9,
             "description": "Status bar priority for the build type item."
           }
         }
