@@ -2,7 +2,7 @@
   "name": "cmake-project-wizard",
   "displayName": "CMake Project Wizard",
   "description": "Scaffold modular C/C++ CMake subprojects with a CLion-style workflow, clangd IntelliSense, and LLDB-DAP debugging.",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "publisher": "siliconembedsoft-hq",
   "repository": {
     "type": "git",
@@ -143,6 +143,11 @@
           "type": "boolean",
           "default": true,
           "description": "Automatically strip add_subdirectory() and launch.json entries when a subproject folder is deleted."
+        },
+        "cmakeProjectWizard.autoReconfigureAfterScaffold": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically run CMake configure after creating a new project/subproject so targets appear without reloading the window."
         }
       }
     }
