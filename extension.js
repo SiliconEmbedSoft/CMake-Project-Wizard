@@ -507,6 +507,7 @@ function discoverTargets(rootFolder) {
   while ((match = subdirRegex.exec(rootContent)) !== null) {
     const name = match[1];
     const subCMake = path.join(rootFolder, name, 'CMakeLists.txt');
+    // Ensure the folder and its CMakeLists.txt physically exist
     if (fs.existsSync(subCMake)) {
       targets.push(name);
     }
@@ -518,7 +519,7 @@ let targetStatusItem;
 let buildTypeStatusItem;
 
 function updateStatusBar(context) {
-  const target = context.workspaceState.get('cmakeProjectWizard.activeTarget', '(no target)');
+  const target = context.workspaceState.get('cmakeProjectWizard.activeTarget', null);
   const buildType = context.workspaceState.get(
     'cmakeProjectWizard.buildType',
     getConfig().get('defaultBuildType', 'Debug')
@@ -531,7 +532,7 @@ function updateStatusBar(context) {
     if (!projectExists) {
       targetStatusItem.hide();
     } else {
-      targetStatusItem.text = `$(target) ${target}`;
+      targetStatusItem.text = `$(target) ${target || '(no target)'}`;
       targetStatusItem.tooltip = 'Click to switch Active CMake Target';
       targetStatusItem.show();
     }
@@ -548,38 +549,78 @@ function updateStatusBar(context) {
 }
 
 /* ============================================================
- * Command Implementations
+ * Self-Healing Active Target Synchronization
  * ============================================================ */
 
 async function applyActiveTarget(context, target) {
-  if (!target) return;
-  await context.workspaceState.update('cmakeProjectWizard.activeTarget', target);
+  const cleanTarget = target && target !== '(no target)' ? target : null;
+  await context.workspaceState.update('cmakeProjectWizard.activeTarget', cleanTarget);
 
-  // Synchronize target and launchTarget with CMake Tools
-  try {
-    await vscode.commands.executeCommand('cmake.setDefaultTarget', target);
-    await vscode.commands.executeCommand('cmake.selectLaunchTarget', target);
-  } catch {
-    // Ignore if commands are not exposed
-  }
-
-  // Persist into settings.json so CMake Tools' native build button targets it
   const root = primaryWorkspaceRoot();
   if (root) {
     const settingsPath = path.join(root, '.vscode', 'settings.json');
     if (fs.existsSync(settingsPath)) {
       try {
         const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
-        settings['cmake.defaultBuildTarget'] = target;
+        if (cleanTarget) {
+          settings['cmake.defaultBuildTarget'] = cleanTarget;
+        } else {
+          delete settings['cmake.defaultBuildTarget'];
+        }
         fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf8');
       } catch {
-        // Ignore JSON write error
+        // Ignore settings write error
       }
     }
   }
 
+  try {
+    if (cleanTarget) {
+      await vscode.commands.executeCommand('cmake.setDefaultTarget', cleanTarget);
+      await vscode.commands.executeCommand('cmake.selectLaunchTarget', cleanTarget);
+    }
+  } catch {
+    // Ignore fallback
+  }
+
   updateStatusBar(context);
 }
+
+// Validates the active target against the filesystem and auto-repairs dead targets
+async function syncAndValidateTarget(context) {
+  const root = primaryWorkspaceRoot();
+  if (!root || !hasValidRootProject(root)) {
+    updateStatusBar(context);
+    return null;
+  }
+
+  const validTargets = discoverTargets(root);
+  let currentTarget = context.workspaceState.get('cmakeProjectWizard.activeTarget', null);
+
+  // If the target no longer exists on disk
+  if (currentTarget && !validTargets.includes(currentTarget)) {
+    cleanupParentCMakeLists(root, currentTarget);
+    cleanupLaunchConfiguration(root, currentTarget);
+
+    const fallback = validTargets.length > 0 ? validTargets[0] : null;
+    await applyActiveTarget(context, fallback);
+    debouncedReconfigure();
+    return fallback;
+  }
+
+  // If no target is set but targets exist, pick the first one
+  if (!currentTarget && validTargets.length > 0) {
+    await applyActiveTarget(context, validTargets[0]);
+    return validTargets[0];
+  }
+
+  updateStatusBar(context);
+  return currentTarget;
+}
+
+/* ============================================================
+ * Command Implementations
+ * ============================================================ */
 
 async function cmdSelectActiveTarget(context) {
   const root = primaryWorkspaceRoot();
@@ -590,12 +631,13 @@ async function cmdSelectActiveTarget(context) {
   const targets = discoverTargets(root);
   if (targets.length === 0) {
     vscode.window.showWarningMessage('CMake Project Wizard: No CMake subproject targets found.');
+    await applyActiveTarget(context, null);
     return;
   }
 
   const quickPickItems = targets.map((t) => ({
     label: t,
-    description: 'Subproject'
+    description: 'Subproject target'
   }));
 
   const pick = await vscode.window.showQuickPick(quickPickItems, {
@@ -635,8 +677,8 @@ async function cmdConfigure() {
 }
 
 async function resolveActiveTarget(context) {
-  let target = context.workspaceState.get('cmakeProjectWizard.activeTarget', null);
-  if (!target || target === '(no target)') {
+  let target = await syncAndValidateTarget(context);
+  if (!target) {
     await cmdSelectActiveTarget(context);
     target = context.workspaceState.get('cmakeProjectWizard.activeTarget', null);
   }
@@ -941,7 +983,7 @@ function activate(context) {
     });
   }
 
-  // Clean Status Bar: Only Target and Build Type (uses CMake Tools native Run/Build buttons)
+  // Status Bar Items
   targetStatusItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 102);
   targetStatusItem.command = 'cmakeProjectWizard.selectActiveTarget';
 
@@ -949,39 +991,51 @@ function activate(context) {
   buildTypeStatusItem.command = 'cmakeProjectWizard.selectBuildType';
 
   context.subscriptions.push(targetStatusItem, buildTypeStatusItem);
-  updateStatusBar(context);
 
+  // Self-heal on activation: check if the previously saved target was deleted
+  syncAndValidateTarget(context);
+
+  // Self-heal when VS Code window gains focus
+  context.subscriptions.push(
+    vscode.window.onDidChangeWindowState((e) => {
+      if (e.focused) {
+        syncAndValidateTarget(context);
+      }
+    })
+  );
+
+  // Native VS Code file/folder deletion watcher
+  context.subscriptions.push(
+    vscode.workspace.onDidDeleteFiles(async (event) => {
+      if (!getConfig().get('autoCleanupOnDelete', true)) return;
+      const root = primaryWorkspaceRoot();
+      if (!root) return;
+
+      for (const uri of event.files) {
+        const deletedPath = uri.fsPath;
+        if (isInternalOrBuildPath(deletedPath, root)) continue;
+
+        const folderName = path.basename(deletedPath);
+        cleanupParentCMakeLists(root, folderName);
+        cleanupLaunchConfiguration(root, folderName);
+      }
+
+      await syncAndValidateTarget(context);
+    })
+  );
+
+  // General filesystem watcher for creations
   const fileWatcher = vscode.workspace.createFileSystemWatcher('**/*', false, false, false);
 
   fileWatcher.onDidDelete(async (uri) => {
     if (!getConfig().get('autoCleanupOnDelete', true)) return;
-
-    const deletedPath = uri.fsPath;
     const root = primaryWorkspaceRoot();
+    if (!root || isInternalOrBuildPath(uri.fsPath, root)) return;
 
-    if (isInternalOrBuildPath(deletedPath, root)) return;
-
-    const parentDir = path.dirname(deletedPath);
-    const folderName = path.basename(deletedPath);
-
-    const parentCMake = path.join(parentDir, 'CMakeLists.txt');
-    if (!fs.existsSync(parentCMake)) return;
-    const parentContent = fs.readFileSync(parentCMake, 'utf8');
-    const targetRegex = new RegExp(`add_subdirectory\\(\\s*["']?${folderName}["']?\\s*\\)`, 'i');
-    if (!targetRegex.test(parentContent)) return;
-
-    cleanupParentCMakeLists(parentDir, folderName);
-    cleanupLaunchConfiguration(parentDir, folderName);
-
-    const active = context.workspaceState.get('cmakeProjectWizard.activeTarget', null);
-    if (active === folderName) {
-      const remainingTargets = discoverTargets(parentDir);
-      const nextTarget = remainingTargets.length > 0 ? remainingTargets[0] : null;
-      await applyActiveTarget(context, nextTarget);
-    }
-
-    updateStatusBar(context);
-    debouncedReconfigure();
+    const folderName = path.basename(uri.fsPath);
+    cleanupParentCMakeLists(root, folderName);
+    cleanupLaunchConfiguration(root, folderName);
+    await syncAndValidateTarget(context);
   });
 
   fileWatcher.onDidCreate((uri) => {
@@ -989,7 +1043,7 @@ function activate(context) {
     if (isInternalOrBuildPath(uri.fsPath, root)) return;
 
     if (path.basename(uri.fsPath) === 'CMakeLists.txt') {
-      updateStatusBar(context);
+      syncAndValidateTarget(context);
       debouncedReconfigure();
     }
   });
@@ -998,7 +1052,7 @@ function activate(context) {
 
   context.subscriptions.push(
     vscode.workspace.onDidChangeWorkspaceFolders(() => {
-      updateStatusBar(context);
+      syncAndValidateTarget(context);
     })
   );
 
