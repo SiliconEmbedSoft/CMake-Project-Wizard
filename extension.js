@@ -94,7 +94,6 @@ async function ensureProjectReady(root) {
   return true;
 }
 
-// Debounce configure executions to prevent build-system race conditions
 let reconfigureTimer = null;
 function debouncedReconfigure() {
   if (!getConfig().get('autoReconfigureAfterScaffold', true)) return;
@@ -147,7 +146,7 @@ function resolveSubprojectContext(uri) {
   }
 
   const active = targetStatusItem ? targetStatusItem.text.replace('$(target) ', '').trim() : null;
-  if (active && active !== '(no target)' && root) {
+  if (active && active !== '(no target)' && active !== 'all' && root) {
     const candidate = path.join(root, active);
     if (fs.existsSync(candidate)) return candidate;
   }
@@ -388,7 +387,7 @@ function cleanupLaunchConfiguration(rootFolder, folderName) {
       }
     }
   } catch {
-    // Ignore JSON syntax errors
+    // Ignore JSON parse errors
   }
 }
 
@@ -507,6 +506,8 @@ function discoverTargets(rootFolder) {
 
 let targetStatusItem;
 let buildTypeStatusItem;
+let runStatusItem;
+let debugStatusItem;
 
 function updateStatusBar(context) {
   const target = context.workspaceState.get('cmakeProjectWizard.activeTarget', '(no target)');
@@ -523,7 +524,7 @@ function updateStatusBar(context) {
       targetStatusItem.hide();
     } else {
       targetStatusItem.text = `$(target) ${target}`;
-      targetStatusItem.tooltip = 'CMake Project Wizard: Active CMake Target';
+      targetStatusItem.tooltip = 'Click to switch Active CMake Target';
       targetStatusItem.show();
     }
   }
@@ -532,8 +533,26 @@ function updateStatusBar(context) {
       buildTypeStatusItem.hide();
     } else {
       buildTypeStatusItem.text = `$(gear) ${buildType}`;
-      buildTypeStatusItem.tooltip = 'CMake Project Wizard: CMake Build Type';
+      buildTypeStatusItem.tooltip = 'Click to switch Build Type (Debug, Release, etc.)';
       buildTypeStatusItem.show();
+    }
+  }
+  if (runStatusItem) {
+    if (!projectExists || target === '(no target)') {
+      runStatusItem.hide();
+    } else {
+      runStatusItem.text = `$(play) Run [${target}]`;
+      runStatusItem.tooltip = `Build and Run "${target}"`;
+      runStatusItem.show();
+    }
+  }
+  if (debugStatusItem) {
+    if (!projectExists || target === '(no target)' || target === 'all') {
+      debugStatusItem.hide();
+    } else {
+      debugStatusItem.text = `$(bug) Debug`;
+      debugStatusItem.tooltip = `Start LLDB-DAP session for "${target}"`;
+      debugStatusItem.show();
     }
   }
 }
@@ -541,6 +560,30 @@ function updateStatusBar(context) {
 /* ============================================================
  * Command Implementations
  * ============================================================ */
+
+async function applyActiveTarget(context, target) {
+  await context.workspaceState.update('cmakeProjectWizard.activeTarget', target);
+
+  // Sync CMake Tools active target
+  try {
+    await vscode.commands.executeCommand('cmake.setDefaultTarget', target);
+    if (target !== 'all') {
+      await vscode.commands.executeCommand('cmake.selectLaunchTarget', target);
+    }
+  } catch {
+    // Ignore fallback
+  }
+
+  // Also write into workspace configuration so CMake Tools persists it
+  try {
+    const cmakeConfig = vscode.workspace.getConfiguration('cmake');
+    await cmakeConfig.update('defaultBuildTarget', target, vscode.ConfigurationTarget.Workspace);
+  } catch {
+    // Ignore
+  }
+
+  updateStatusBar(context);
+}
 
 async function cmdSelectActiveTarget(context) {
   const root = primaryWorkspaceRoot();
@@ -553,18 +596,19 @@ async function cmdSelectActiveTarget(context) {
     vscode.window.showWarningMessage('CMake Project Wizard: No CMake subproject targets found.');
     return;
   }
-  const pick = await vscode.window.showQuickPick(targets, {
+
+  const quickPickItems = [
+    { label: 'all', description: 'Build all subproject targets' },
+    ...targets.map((t) => ({ label: t, description: 'Subproject executable/library' }))
+  ];
+
+  const pick = await vscode.window.showQuickPick(quickPickItems, {
     title: 'Select Active CMake Target',
-    placeHolder: 'Choose the target to build/run/debug'
+    placeHolder: 'Choose a target or select "all" to build everything'
   });
   if (!pick) return;
-  await context.workspaceState.update('cmakeProjectWizard.activeTarget', pick);
-  try {
-    await vscode.commands.executeCommand('cmake.setDefaultTarget', pick);
-  } catch {
-    // Ignore if command not supported
-  }
-  updateStatusBar(context);
+
+  await applyActiveTarget(context, pick.label);
 }
 
 async function cmdSelectBuildType(context) {
@@ -603,15 +647,31 @@ async function resolveActiveTarget(context) {
   return target;
 }
 
+async function executeCmakeBuild(root, target) {
+  return new Promise((resolve) => {
+    const terminalName = 'CMake Build';
+    let terminal = vscode.window.terminals.find((t) => t.name === terminalName);
+    if (!terminal) {
+      terminal = vscode.window.createTerminal({ name: terminalName, cwd: root });
+    }
+    terminal.show();
+
+    const targetFlag = target && target !== 'all' ? `--target ${target}` : '';
+    terminal.sendText(`/usr/bin/cmake --build "${path.join(root, 'build')}" --config Debug ${targetFlag}`);
+    resolve(true);
+  });
+}
+
 async function cmdBuildTarget(context) {
   const root = primaryWorkspaceRoot();
   if (!(await ensureProjectReady(root))) return;
 
   const target = await resolveActiveTarget(context);
   if (!target) return;
+
   try {
-    await vscode.commands.executeCommand('cmake.build');
-    vscode.window.showInformationMessage(`CMake Project Wizard: Build triggered (target: ${target}).`);
+    // Directly invoke CMake build with explicit target
+    await executeCmakeBuild(root, target);
   } catch (err) {
     vscode.window.showErrorMessage(`CMake Project Wizard: Build failed. ${err.message}`);
   }
@@ -621,31 +681,56 @@ async function cmdRunTarget(context) {
   const root = primaryWorkspaceRoot();
   if (!(await ensureProjectReady(root))) return;
 
-  const target = await resolveActiveTarget(context);
+  let target = await resolveActiveTarget(context);
   if (!target) return;
+
+  if (target === 'all') {
+    const targets = discoverTargets(root);
+    if (targets.length === 0) {
+      vscode.window.showWarningMessage('CMake Project Wizard: No runnable targets found.');
+      return;
+    }
+    const pick = await vscode.window.showQuickPick(targets, {
+      title: 'Run Executable',
+      placeHolder: 'Select which subproject binary to run'
+    });
+    if (!pick) return;
+    target = pick;
+  }
 
   const isWindows = process.platform === 'win32';
   const binaryExt = isWindows ? '.exe' : '';
   const binaryPath = path.join(root, 'build', target, `${target}${binaryExt}`);
 
-  if (!fs.existsSync(binaryPath)) {
-    vscode.window.showWarningMessage(
-      `CMake Project Wizard: Binary not found for "${target}". Build it first.`
-    );
-    return;
-  }
-
-  const terminal = vscode.window.createTerminal({ name: `Run: ${target}`, cwd: root });
-  terminal.show();
-  terminal.sendText(`"${binaryPath}"`);
+  // Build first before running
+  const buildTerminal = vscode.window.createTerminal({ name: `Run: ${target}`, cwd: root });
+  buildTerminal.show();
+  buildTerminal.sendText(`/usr/bin/cmake --build "${path.join(root, 'build')}" --target ${target} && "${binaryPath}"`);
 }
 
 async function cmdDebugTarget(context) {
   const root = primaryWorkspaceRoot();
   if (!(await ensureProjectReady(root))) return;
 
-  const target = await resolveActiveTarget(context);
+  let target = await resolveActiveTarget(context);
   if (!target) return;
+
+  if (target === 'all') {
+    const targets = discoverTargets(root);
+    if (targets.length === 0) {
+      vscode.window.showWarningMessage('CMake Project Wizard: No debuggable targets found.');
+      return;
+    }
+    const pick = await vscode.window.showQuickPick(targets, {
+      title: 'Debug Executable',
+      placeHolder: 'Select which subproject binary to debug'
+    });
+    if (!pick) return;
+    target = pick;
+  }
+
+  // Pre-build target
+  await executeCmakeBuild(root, target);
 
   const configName = `Debug Subproject: ${target}`;
   registerLaunchConfiguration(root, target);
@@ -774,13 +859,8 @@ async function cmdNewSubproject(context, uri) {
       registerLaunchConfiguration(targetDir, trimmedName);
     }
 
-    await context.workspaceState.update('cmakeProjectWizard.activeTarget', trimmedName);
-    try {
-      await vscode.commands.executeCommand('cmake.setDefaultTarget', trimmedName);
-    } catch {
-      // Ignore if cmake-tools is initializing
-    }
-    updateStatusBar(context);
+    // Explicitly update and switch CMake Tools default target immediately
+    await applyActiveTarget(context, trimmedName);
 
     const textDoc = await vscode.workspace.openTextDocument(sourcePath);
     await vscode.window.showTextDocument(textDoc, { preview: false });
@@ -913,14 +993,22 @@ function activate(context) {
     });
   }
 
-  targetStatusItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
+  // Status Bar items (CLion layout: [Target] [BuildType] [Run] [Debug])
+  targetStatusItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 102);
   targetStatusItem.command = 'cmakeProjectWizard.selectActiveTarget';
-  buildTypeStatusItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 99);
+
+  buildTypeStatusItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 101);
   buildTypeStatusItem.command = 'cmakeProjectWizard.selectBuildType';
-  context.subscriptions.push(targetStatusItem, buildTypeStatusItem);
+
+  runStatusItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
+  runStatusItem.command = 'cmakeProjectWizard.runTarget';
+
+  debugStatusItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 99);
+  debugStatusItem.command = 'cmakeProjectWizard.debugTarget';
+
+  context.subscriptions.push(targetStatusItem, buildTypeStatusItem, runStatusItem, debugStatusItem);
   updateStatusBar(context);
 
-  // Watch only source directories, ignoring build artifacts and hidden dot-folders
   const fileWatcher = vscode.workspace.createFileSystemWatcher('**/*', false, false, false);
 
   fileWatcher.onDidDelete(async (uri) => {
@@ -929,13 +1017,11 @@ function activate(context) {
     const deletedPath = uri.fsPath;
     const root = primaryWorkspaceRoot();
 
-    // Prevent loop: ignore deletions occurring inside build/ or dot-folders
     if (isInternalOrBuildPath(deletedPath, root)) return;
 
     const parentDir = path.dirname(deletedPath);
     const folderName = path.basename(deletedPath);
 
-    // Only proceed if this directory was registered in parent CMakeLists.txt
     const parentCMake = path.join(parentDir, 'CMakeLists.txt');
     if (!fs.existsSync(parentCMake)) return;
     const parentContent = fs.readFileSync(parentCMake, 'utf8');
@@ -948,17 +1034,8 @@ function activate(context) {
     const active = context.workspaceState.get('cmakeProjectWizard.activeTarget', null);
     if (active === folderName) {
       const remainingTargets = discoverTargets(parentDir);
-      const nextTarget = remainingTargets.length > 0 ? remainingTargets[0] : null;
-
-      await context.workspaceState.update('cmakeProjectWizard.activeTarget', nextTarget);
-
-      try {
-        if (nextTarget) {
-          await vscode.commands.executeCommand('cmake.setDefaultTarget', nextTarget);
-        }
-      } catch {
-        // Ignore if cmake-tools is busy
-      }
+      const nextTarget = remainingTargets.length > 0 ? remainingTargets[0] : 'all';
+      await applyActiveTarget(context, nextTarget);
     }
 
     updateStatusBar(context);
