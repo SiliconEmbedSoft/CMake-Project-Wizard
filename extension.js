@@ -7,70 +7,12 @@ const path = require('path');
 
 let outputChannel;
 
-/**
- * Log formatted messages to the dedicated extension output channel.
- * @param {'INFO' | 'WARN' | 'ERROR' | 'DEBUG'} level 
- * @param {string} message 
- */
 function log(level, message) {
   if (!outputChannel) {
     outputChannel = vscode.window.createOutputChannel('CMake Project Wizard');
   }
   const timestamp = new Date().toLocaleTimeString('en-US', { hour12: false });
   outputChannel.appendLine(`[${timestamp}] [${level}] ${message}`);
-}
-
-/* ------------------------------------------------------------------ */
-/* Companion Dependencies Auto-Check                                   */
-/* ------------------------------------------------------------------ */
-
-const REQUIRED_EXTENSIONS = [
-  'llvm-vs-code-extensions.vscode-clangd',
-  'llvm-vs-code-extensions.lldb-dap',
-  'ms-vscode.cmake-tools',
-  'ms-vscode.cpp-devtools',
-  'ms-vscode.cpptools-themes'
-];
-
-async function ensureDependenciesInstalled() {
-  const missing = REQUIRED_EXTENSIONS.filter(
-    (id) => !vscode.extensions.getExtension(id)
-  );
-
-  if (missing.length === 0) {
-    return;
-  }
-
-  const installChoice = await vscode.window.showInformationMessage(
-    `CMake Project Wizard recommends the companion extensions: ${missing.join(', ')}. Install them now?`,
-    'Install All',
-    'Dismiss'
-  );
-
-  if (installChoice === 'Install All') {
-    await vscode.window.withProgress(
-      {
-        location: vscode.ProgressLocation.Notification,
-        title: 'Installing CMake Project Wizard dependencies...',
-        cancellable: false
-      },
-      async (progress) => {
-        for (const extId of missing) {
-          progress.report({ message: `Installing ${extId}...` });
-          try {
-            await vscode.commands.executeCommand(
-              'workbench.extensions.installExtension',
-              extId
-            );
-            log('INFO', `Triggered installation for: ${extId}`);
-          } catch (err) {
-            log('ERROR', `Failed to install dependency ${extId}: ${err.message}`);
-          }
-        }
-      }
-    );
-    vscode.window.showInformationMessage('All required companion dependencies have been triggered for install.');
-  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -141,89 +83,12 @@ function updateStatusBar() {
 }
 
 /* ------------------------------------------------------------------ */
-/* CMake Tools Bridge & Synchronization                               */
-/* ------------------------------------------------------------------ */
-
-/**
- * Synchronize build and launch targets to CMake Tools, and prompt
- * the user with CMake Tools' native launch target selection UI.
- * @param {string} targetName 
- */
-async function syncTargetToCmakeTools(targetName) {
-  if (!targetName) {
-    return;
-  }
-
-  // 1. Sync default build target in CMake Tools
-  try {
-    await vscode.commands.executeCommand('cmake.setDefaultTarget', undefined, targetName);
-    log('INFO', `Set cmake-tools default build target to "${targetName}"`);
-  } catch (err) {
-    log('DEBUG', `cmake.setDefaultTarget error: ${err.message}`);
-  }
-
-  // 2. Open CMake Tools Launch Target prompt
-  if (targetName !== 'all') {
-    try {
-      // First attempt passing the target directly to selectLaunchTarget
-      await vscode.commands.executeCommand('cmake.selectLaunchTarget', undefined, targetName);
-      log('INFO', `Synced launch target "${targetName}" with cmake.selectLaunchTarget`);
-    } catch {
-      try {
-        // Fallback: trigger cmake-tools launch target menu so user can select/confirm
-        await vscode.commands.executeCommand('cmake.selectLaunchTarget');
-      } catch (err) {
-        log('DEBUG', `Could not invoke selectLaunchTarget: ${err.message}`);
-      }
-    }
-
-    // Direct API fallback to ensure the driver is updated
-    try {
-      const cmakeExt = vscode.extensions.getExtension('ms-vscode.cmake-tools');
-      if (cmakeExt) {
-        if (!cmakeExt.isActive) {
-          await cmakeExt.activate();
-        }
-        const cmakeApi = cmakeExt.exports;
-        if (cmakeApi) {
-          if (typeof cmakeApi.setDefaultTarget === 'function') {
-            await cmakeApi.setDefaultTarget(targetName);
-          }
-          if (typeof cmakeApi.setLaunchTarget === 'function') {
-            await cmakeApi.setLaunchTarget(targetName);
-          }
-        }
-      }
-    } catch (apiErr) {
-      log('WARN', `cmake-tools API sync failed: ${apiErr.message}`);
-    }
-  }
-}
-
-/**
- * Synchronize the build type to ms-vscode.cmake-tools.
- * @param {string} buildType 
- */
-async function syncBuildTypeToCmakeTools(buildType) {
-  if (!buildType) {
-    return;
-  }
-
-  try {
-    await vscode.commands.executeCommand('cmake.setBuildType', buildType);
-    log('INFO', `Successfully set cmake-tools build type to "${buildType}"`);
-  } catch (err) {
-    log('WARN', `Could not synchronize build type to cmake-tools: ${err.message}`);
-  }
-}
-
-/* ------------------------------------------------------------------ */
 /* Target Discovery & Selection                                       */
 /* ------------------------------------------------------------------ */
 
 /**
  * Collect candidate targets by scanning CMakeLists.txt files.
- * Includes 'all' only when subprojects exist in the workspace[cite: 1].
+ * Includes 'all' only when subprojects exist in the workspace.
  */
 async function discoverTargets() {
   const rootUri = vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders[0].uri;
@@ -247,7 +112,7 @@ async function discoverTargets() {
         targets.add(m[1]);
       }
     } catch {
-      // Ignore unreadable files[cite: 1]
+      // Ignore unreadable files
     }
   }
 
@@ -277,7 +142,7 @@ async function selectActiveTarget() {
   }
 
   const picked = await vscode.window.showQuickPick(targets, {
-    placeHolder: 'Select active build target',
+    placeHolder: 'Select active target',
     matchOnDescription: true
   });
 
@@ -286,15 +151,19 @@ async function selectActiveTarget() {
     log('INFO', `Active target selected: "${activeTarget}"`);
     updateStatusBar();
 
-    // 1. Sync build target to CMake Tools
-    await syncTargetToCmakeTools(picked);
+    // Sync default build target to CMake Tools
+    try {
+      await vscode.commands.executeCommand('cmake.setDefaultTarget', undefined, picked);
+    } catch {
+      // cmake-tools may not be active
+    }
 
-    // 2. Open launch target selection to synchronize the Run button
+    // Prompt user to pick/confirm launch target so Run works seamlessly
     if (picked !== 'all') {
       try {
         await vscode.commands.executeCommand('cmake.selectLaunchTarget');
-      } catch (err) {
-        log('DEBUG', `cmake.selectLaunchTarget dialog failed: ${err.message}`);
+      } catch {
+        // ignore if not supported
       }
     }
   }
@@ -309,29 +178,12 @@ async function selectBuildType() {
     activeBuildType = picked;
     log('INFO', `Active build type selected: "${activeBuildType}"`);
     updateStatusBar();
-    await syncBuildTypeToCmakeTools(picked);
-  }
-}
 
-/**
- * Explicitly build the currently active target via CMake Tools.
- */
-async function buildActiveTarget() {
-  if (!activeTarget) {
-    vscode.window.showWarningMessage('No active target selected.');
-    return;
-  }
-
-  log('INFO', `Triggering build for active target: "${activeTarget}"`);
-  try {
-    if (activeTarget === 'all') {
-      await vscode.commands.executeCommand('cmake.build');
-    } else {
-      await vscode.commands.executeCommand('cmake.buildNamedTarget', activeTarget);
+    try {
+      await vscode.commands.executeCommand('cmake.setBuildType', picked);
+    } catch {
+      // ignore
     }
-  } catch (err) {
-    log('ERROR', `Build execution failed: ${err.message}`);
-    vscode.window.showErrorMessage(`Build error: ${err.message}`);
   }
 }
 
@@ -361,12 +213,6 @@ function sanitizeName(name) {
   return name.replace(/[^A-Za-z0-9_]/g, '_');
 }
 
-/**
- * Classify a folder:
- *   'subprojects' -> root uses add_subdirectory() or has nested CMakeLists.txt[cite: 1]
- *   'single'      -> root CMakeLists.txt defines concrete targets or has local src/
- *   'none'        -> empty folder, uninitialized, or root CMakeLists.txt acting as an empty container
- */
 async function classifyFolder(folderUri) {
   const rootCmake = vscode.Uri.joinPath(folderUri, 'CMakeLists.txt');
 
@@ -377,12 +223,10 @@ async function classifyFolder(folderUri) {
     rootText = null;
   }
 
-  // 1. Explicit add_subdirectory indicates subprojects
   if (rootText && /\badd_subdirectory\s*\(/.test(rootText)) {
     return 'subprojects';
   }
 
-  // 2. Nested CMakeLists.txt in immediate child directories indicates subprojects
   try {
     const entries = await vscode.workspace.fs.readDirectory(folderUri);
     for (const [name, type] of entries) {
@@ -394,10 +238,9 @@ async function classifyFolder(folderUri) {
       }
     }
   } catch {
-    // Ignore read errors
+    // ignore
   }
 
-  // 3. Check if root is truly a single standalone project with source/targets
   if (rootText) {
     const hasTarget = /\badd_(?:executable|library)\s*\(/.test(rootText);
     const hasSrcDir = await fileExists(vscode.Uri.joinPath(folderUri, 'src'));
@@ -411,8 +254,8 @@ async function classifyFolder(folderUri) {
 }
 
 /**
- * Automatically cleans up stale add_subdirectory(...) entries in root CMakeLists.txt
- * when subproject folders are deleted from disk.
+ * Safe auto-cleanup when a subproject is deleted from disk.
+ * Removes add_subdirectory and resets CMake Tools' active target back to 'all'.
  */
 async function cleanupDeletedSubdirectory(deletedUri) {
   const cfg = vscode.workspace.getConfiguration('cmakeProjectWizard');
@@ -440,13 +283,24 @@ async function cleanupDeletedSubdirectory(deletedUri) {
     await writeText(rootCmakeUri, updated);
     log('INFO', `Removed stale add_subdirectory(${dirName}) from root CMakeLists.txt`);
 
-    await discoverTargets();
-    updateStatusBar();
+    // Reset targets
+    const remainingTargets = await discoverTargets();
+    if (activeTarget === dirName || !remainingTargets.includes(activeTarget)) {
+      activeTarget = remainingTargets.includes('all') ? 'all' : (remainingTargets[0] || '');
+      updateStatusBar();
+
+      // Clear the deleted target from CMake Tools so ninja won't ask for it
+      try {
+        await vscode.commands.executeCommand('cmake.setDefaultTarget', undefined, activeTarget || 'all');
+      } catch {
+        // ignore
+      }
+    }
 
     try {
       await vscode.commands.executeCommand('cmake.configure');
     } catch {
-      // cmake-tools may not be active
+      // ignore
     }
   }
 }
@@ -614,9 +468,6 @@ async function convertToSingleProject(folderUri) {
 
   await discoverTargets();
   updateStatusBar();
-  if (activeTarget) {
-    await syncTargetToCmakeTools(activeTarget);
-  }
 
   try {
     await vscode.commands.executeCommand('cmake.configure');
@@ -731,9 +582,10 @@ async function createSubproject(parentFolderUri) {
   await discoverTargets();
   activeTarget = name;
   updateStatusBar();
-  await syncTargetToCmakeTools(name);
 
+  // Set default build target and configure
   try {
+    await vscode.commands.executeCommand('cmake.setDefaultTarget', undefined, name);
     await vscode.commands.executeCommand('cmake.configure');
   } catch {
     // Ignore
@@ -943,7 +795,6 @@ function withFolder(handler) {
 function activate(context) {
   log('INFO', 'CMake Project Wizard extension activating...');
 
-  ensureDependenciesInstalled();
   createStatusBarItems(context);
 
   const fileWatcher = vscode.workspace.createFileSystemWatcher('**/*');
@@ -957,8 +808,6 @@ function activate(context) {
       'cmakeProjectWizard.selectActiveTarget', selectActiveTarget),
     vscode.commands.registerCommand(
       'cmakeProjectWizard.selectBuildType', selectBuildType),
-    vscode.commands.registerCommand(
-      'cmakeProjectWizard.buildActiveTarget', buildActiveTarget),
     vscode.commands.registerCommand(
       'cmakeProjectWizard.createSubproject', withFolder(createSubproject)),
     vscode.commands.registerCommand(
