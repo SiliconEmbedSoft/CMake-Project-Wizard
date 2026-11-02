@@ -145,8 +145,8 @@ function updateStatusBar() {
 /* ------------------------------------------------------------------ */
 
 /**
- * Synchronize the selected target to both Build and Run (Launch) in ms-vscode.cmake-tools.
- * This guarantees the native CMake Tools Run/Play button runs the target chosen here.
+ * Synchronize build and launch targets to CMake Tools, and prompt
+ * the user with CMake Tools' native launch target selection UI.
  * @param {string} targetName 
  */
 async function syncTargetToCmakeTools(targetName) {
@@ -162,28 +162,22 @@ async function syncTargetToCmakeTools(targetName) {
     log('DEBUG', `cmake.setDefaultTarget error: ${err.message}`);
   }
 
-  // 2. Sync CMake Tools' Run / Launch target
+  // 2. Open CMake Tools Launch Target prompt
   if (targetName !== 'all') {
-    // Method A: Update workspace debugConfig directly so CMake Tools Play button uses it
     try {
-      const cmakeConfig = vscode.workspace.getConfiguration('cmake');
-      const currentDebugConfig = cmakeConfig.get('debugConfig') || {};
-
-      await cmakeConfig.update(
-        'debugConfig',
-        {
-          ...currentDebugConfig,
-          target: targetName,
-          program: `\${workspaceFolder}/build/${targetName}/${targetName}`
-        },
-        vscode.ConfigurationTarget.Workspace
-      );
-      log('INFO', `Updated cmake.debugConfig launch target to "${targetName}"`);
-    } catch (err) {
-      log('DEBUG', `Failed to update cmake.debugConfig: ${err.message}`);
+      // First attempt passing the target directly to selectLaunchTarget
+      await vscode.commands.executeCommand('cmake.selectLaunchTarget', undefined, targetName);
+      log('INFO', `Synced launch target "${targetName}" with cmake.selectLaunchTarget`);
+    } catch {
+      try {
+        // Fallback: trigger cmake-tools launch target menu so user can select/confirm
+        await vscode.commands.executeCommand('cmake.selectLaunchTarget');
+      } catch (err) {
+        log('DEBUG', `Could not invoke selectLaunchTarget: ${err.message}`);
+      }
     }
 
-    // Method B: Direct API call to CMake Tools
+    // Direct API fallback to ensure the driver is updated
     try {
       const cmakeExt = vscode.extensions.getExtension('ms-vscode.cmake-tools');
       if (cmakeExt) {
@@ -192,24 +186,16 @@ async function syncTargetToCmakeTools(targetName) {
         }
         const cmakeApi = cmakeExt.exports;
         if (cmakeApi) {
-          if (typeof cmakeApi.setLaunchTarget === 'function') {
-            await cmakeApi.setLaunchTarget(targetName);
-            log('INFO', `Set cmake-tools launch target via API: "${targetName}"`);
-          }
           if (typeof cmakeApi.setDefaultTarget === 'function') {
             await cmakeApi.setDefaultTarget(targetName);
+          }
+          if (typeof cmakeApi.setLaunchTarget === 'function') {
+            await cmakeApi.setLaunchTarget(targetName);
           }
         }
       }
     } catch (apiErr) {
-      log('WARN', `Could not update cmake-tools API directly: ${apiErr.message}`);
-    }
-
-    // Method C: Command fallback with raw argument
-    try {
-      await vscode.commands.executeCommand('cmake.selectLaunchTarget', targetName);
-    } catch {
-      // Ignore if command interface is silent
+      log('WARN', `cmake-tools API sync failed: ${apiErr.message}`);
     }
   }
 }
@@ -232,12 +218,12 @@ async function syncBuildTypeToCmakeTools(buildType) {
 }
 
 /* ------------------------------------------------------------------ */
-/* Target Discovery                                                   */
+/* Target Discovery & Selection                                       */
 /* ------------------------------------------------------------------ */
 
 /**
  * Collect candidate targets by scanning CMakeLists.txt files.
- * Includes 'all' only when subprojects exist in the workspace.
+ * Includes 'all' only when subprojects exist in the workspace[cite: 1].
  */
 async function discoverTargets() {
   const rootUri = vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders[0].uri;
@@ -261,7 +247,7 @@ async function discoverTargets() {
         targets.add(m[1]);
       }
     } catch {
-      // Ignore unreadable files
+      // Ignore unreadable files[cite: 1]
     }
   }
 
@@ -291,7 +277,7 @@ async function selectActiveTarget() {
   }
 
   const picked = await vscode.window.showQuickPick(targets, {
-    placeHolder: 'Select active target',
+    placeHolder: 'Select active build target',
     matchOnDescription: true
   });
 
@@ -299,7 +285,18 @@ async function selectActiveTarget() {
     activeTarget = picked;
     log('INFO', `Active target selected: "${activeTarget}"`);
     updateStatusBar();
+
+    // 1. Sync build target to CMake Tools
     await syncTargetToCmakeTools(picked);
+
+    // 2. Open launch target selection to synchronize the Run button
+    if (picked !== 'all') {
+      try {
+        await vscode.commands.executeCommand('cmake.selectLaunchTarget');
+      } catch (err) {
+        log('DEBUG', `cmake.selectLaunchTarget dialog failed: ${err.message}`);
+      }
+    }
   }
 }
 
@@ -366,7 +363,7 @@ function sanitizeName(name) {
 
 /**
  * Classify a folder:
- *   'subprojects' -> root uses add_subdirectory() or has nested CMakeLists.txt
+ *   'subprojects' -> root uses add_subdirectory() or has nested CMakeLists.txt[cite: 1]
  *   'single'      -> root CMakeLists.txt defines concrete targets or has local src/
  *   'none'        -> empty folder, uninitialized, or root CMakeLists.txt acting as an empty container
  */
