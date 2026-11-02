@@ -1,4 +1,3 @@
-// v1.3.6
 const vscode = require('vscode');
 const path = require('path');
 
@@ -146,7 +145,8 @@ function updateStatusBar() {
 /* ------------------------------------------------------------------ */
 
 /**
- * Synchronize the selected target to ms-vscode.cmake-tools so F7/Build builds the right target.
+ * Synchronize the selected target to both Build and Run (Launch) in ms-vscode.cmake-tools.
+ * This guarantees the native CMake Tools Run/Play button runs the target chosen here.
  * @param {string} targetName 
  */
 async function syncTargetToCmakeTools(targetName) {
@@ -154,13 +154,36 @@ async function syncTargetToCmakeTools(targetName) {
     return;
   }
 
+  // 1. Sync default build target in CMake Tools
   try {
-    // 1. Primary method: call the cmake.setDefaultTarget command
     await vscode.commands.executeCommand('cmake.setDefaultTarget', undefined, targetName);
-    log('INFO', `Successfully set cmake-tools default target to "${targetName}" via command.`);
-  } catch (cmdErr) {
-    log('DEBUG', `cmake.setDefaultTarget command error: ${cmdErr.message}. Attempting API fallback...`);
-    // 2. Fallback method: via CMake Tools exported API
+    log('INFO', `Set cmake-tools default build target to "${targetName}"`);
+  } catch (err) {
+    log('DEBUG', `cmake.setDefaultTarget error: ${err.message}`);
+  }
+
+  // 2. Sync CMake Tools' Run / Launch target
+  if (targetName !== 'all') {
+    // Method A: Update workspace debugConfig directly so CMake Tools Play button uses it
+    try {
+      const cmakeConfig = vscode.workspace.getConfiguration('cmake');
+      const currentDebugConfig = cmakeConfig.get('debugConfig') || {};
+
+      await cmakeConfig.update(
+        'debugConfig',
+        {
+          ...currentDebugConfig,
+          target: targetName,
+          program: `\${workspaceFolder}/build/${targetName}/${targetName}`
+        },
+        vscode.ConfigurationTarget.Workspace
+      );
+      log('INFO', `Updated cmake.debugConfig launch target to "${targetName}"`);
+    } catch (err) {
+      log('DEBUG', `Failed to update cmake.debugConfig: ${err.message}`);
+    }
+
+    // Method B: Direct API call to CMake Tools
     try {
       const cmakeExt = vscode.extensions.getExtension('ms-vscode.cmake-tools');
       if (cmakeExt) {
@@ -168,13 +191,25 @@ async function syncTargetToCmakeTools(targetName) {
           await cmakeExt.activate();
         }
         const cmakeApi = cmakeExt.exports;
-        if (cmakeApi && typeof cmakeApi.setDefaultTarget === 'function') {
-          await cmakeApi.setDefaultTarget(targetName);
-          log('INFO', `Successfully set cmake-tools default target to "${targetName}" via API.`);
+        if (cmakeApi) {
+          if (typeof cmakeApi.setLaunchTarget === 'function') {
+            await cmakeApi.setLaunchTarget(targetName);
+            log('INFO', `Set cmake-tools launch target via API: "${targetName}"`);
+          }
+          if (typeof cmakeApi.setDefaultTarget === 'function') {
+            await cmakeApi.setDefaultTarget(targetName);
+          }
         }
       }
     } catch (apiErr) {
-      log('WARN', `Could not synchronize target to cmake-tools: ${apiErr.message}`);
+      log('WARN', `Could not update cmake-tools API directly: ${apiErr.message}`);
+    }
+
+    // Method C: Command fallback with raw argument
+    try {
+      await vscode.commands.executeCommand('cmake.selectLaunchTarget', targetName);
+    } catch {
+      // Ignore if command interface is silent
     }
   }
 }
